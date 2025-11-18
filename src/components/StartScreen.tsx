@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { supabase } from '../services/supabase'
 import { useGameStore } from '../store/gameStore'
+import { MatchmakingModal } from './Matchmaking'
+import { PublicLobby } from './PublicLobby'
 
 interface StartScreenProps {
   onGameStart: () => void
@@ -10,9 +12,9 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
   const [username, setUsername] = useState('')
   const [showCreateGame, setShowCreateGame] = useState(false)
   const [showJoinGame, setShowJoinGame] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
+  const [showMatchmaking, setShowMatchmaking] = useState(false)
+  const [showPublicLobby, setShowPublicLobby] = useState(false)
   const setPlayer = useGameStore(state => state.setPlayer)
-  const setGame = useGameStore(state => state.setGame)
 
   const handleQuickPlay = async () => {
     if (!username.trim()) {
@@ -20,74 +22,41 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
       return
     }
 
-    setIsLoading(true)
+    await ensurePlayerExists()
+    setShowMatchmaking(true)
+  }
+  
+  const ensurePlayerExists = async () => {
+    if (useGameStore.getState().player) return
+    
     try {
-      // Create anonymous player
-      const { data: player, error: playerError } = await supabase
+      // Create or get player
+      const { data: existingPlayer } = await supabase
         .from('players')
-        .insert({
-          username: username.trim(),
-          credits: 10000,
-          energy: 50000,
-          minerals: 1000,
-          research_points: 0
-        })
         .select()
+        .eq('username', username.trim())
         .single()
-
-      if (playerError) throw playerError
-
-      setPlayer(player)
-
-      // Find or create a waiting game
-      const { data: waitingGames, error: gamesError } = await supabase
-        .from('games')
-        .select('*')
-        .eq('status', 'waiting')
-        .lt('max_players', 8)
-        .limit(1)
-
-      if (gamesError) throw gamesError
-
-      let game
-      if (waitingGames && waitingGames.length > 0) {
-        // Join existing game
-        game = waitingGames[0]
+      
+      if (existingPlayer) {
+        setPlayer(existingPlayer)
       } else {
-        // Create new game
-        const { data: newGame, error: newGameError } = await supabase
-          .from('games')
+        const { data: newPlayer, error } = await supabase
+          .from('players')
           .insert({
-            name: `${username}'s Game`,
-            status: 'waiting',
-            max_players: 8,
-            victory_condition: 80,
-            tick_rate: 100
+            username: username.trim(),
+            credits: 10000,
+            energy: 50000,
+            minerals: 1000,
+            research_points: 0
           })
           .select()
           .single()
-
-        if (newGameError) throw newGameError
-        game = newGame
+        
+        if (error) throw error
+        setPlayer(newPlayer)
       }
-
-      // Add player to game
-      await supabase
-        .from('game_players')
-        .insert({
-          game_id: game.id,
-          player_id: player.id,
-          empire_color: '#' + Math.floor(Math.random()*16777215).toString(16),
-          placement_order: 1
-        })
-
-      setGame(game)
-      onGameStart()
     } catch (error) {
-      console.error('Error starting game:', error)
-      alert('Failed to start game. Please try again.')
-    } finally {
-      setIsLoading(false)
+      console.error('Error creating player:', error)
     }
   }
 
@@ -119,24 +88,24 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
         <div className="space-y-4">
           <button
             onClick={handleQuickPlay}
-            disabled={isLoading || !username.trim()}
+            disabled={!username.trim()}
             className={`
               w-full px-8 py-4 text-xl font-bold rounded-lg transition-all
-              ${isLoading || !username.trim()
+              ${!username.trim()
                 ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
                 : 'bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white transform hover:scale-105'
               }
             `}
           >
-            {isLoading ? 'Finding Game...' : '⚡ Quick Play'}
+            ⚡ Quick Match
           </button>
 
           <button
             onClick={() => setShowCreateGame(true)}
-            disabled={isLoading || !username.trim()}
+            disabled={!username.trim()}
             className={`
               w-full px-8 py-4 text-xl font-bold rounded-lg transition-all
-              ${isLoading || !username.trim()
+              ${!username.trim()
                 ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
                 : 'bg-gray-800 hover:bg-gray-700 text-white border-2 border-gray-700 hover:border-gray-600'
               }
@@ -147,10 +116,10 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
 
           <button
             onClick={() => setShowJoinGame(true)}
-            disabled={isLoading || !username.trim()}
+            disabled={!username.trim()}
             className={`
               w-full px-8 py-4 text-xl font-bold rounded-lg transition-all
-              ${isLoading || !username.trim()
+              ${!username.trim()
                 ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
                 : 'bg-gray-800 hover:bg-gray-700 text-white border-2 border-gray-700 hover:border-gray-600'
               }
@@ -164,10 +133,10 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
               // TODO: Implement singleplayer vs AI
               alert('Singleplayer mode coming soon!')
             }}
-            disabled={isLoading || !username.trim()}
+            disabled={!username.trim()}
             className={`
               w-full px-8 py-4 text-xl font-bold rounded-lg transition-all
-              ${isLoading || !username.trim()
+              ${!username.trim()
                 ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
                 : 'bg-gray-800 hover:bg-gray-700 text-white border-2 border-gray-700 hover:border-gray-600'
               }
@@ -204,6 +173,39 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
           onClose={() => setShowJoinGame(false)}
           onGameJoined={onGameStart}
         />
+      )}
+      
+      {/* Matchmaking Modal */}
+      {showMatchmaking && (
+        <MatchmakingModal
+          isOpen={showMatchmaking}
+          onClose={() => setShowMatchmaking(false)}
+          onMatchFound={(gameId) => {
+            setShowMatchmaking(false)
+            onGameStart()
+          }}
+        />
+      )}
+      
+      {/* Public Lobby */}
+      {showPublicLobby && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-gray-900 rounded-lg p-8 max-w-4xl w-full max-h-[80vh] overflow-y-auto border-2 border-gray-700">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold text-white">Browse Games</h2>
+              <button
+                onClick={() => setShowPublicLobby(false)}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+            <PublicLobby onJoinGame={(gameId) => {
+              setShowPublicLobby(false)
+              onGameStart()
+            }} />
+          </div>
+        </div>
       )}
     </div>
   )
