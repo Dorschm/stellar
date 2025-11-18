@@ -1,43 +1,74 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Game } from './components/Game'
+import { StartScreen } from './components/StartScreen'
+import { GameLobby } from './components/GameLobby'
 import { useGameStore } from './store/gameStore'
+import { supabase } from './services/supabase'
+
+type GameState = 'start' | 'lobby' | 'active' | 'completed'
 
 function App() {
-  const setGame = useGameStore(state => state.setGame)
+  const [gameState, setGameState] = useState<GameState>('start')
+  const currentGame = useGameStore(state => state.currentGame)
+  const player = useGameStore(state => state.player)
   const setSystems = useGameStore(state => state.setSystems)
-  const setPlayer = useGameStore(state => state.setPlayer)
   const setFleets = useGameStore(state => state.setFleets)
   
   useEffect(() => {
-    // Initialize game with test data for now
-    // TODO: Replace with actual game creation/loading from Supabase
-    initializeTestGame()
-  }, [])
+    // Check game state when it changes
+    if (currentGame) {
+      if (currentGame.status === 'waiting') {
+        setGameState('lobby')
+      } else if (currentGame.status === 'active') {
+        setGameState('active')
+        // Initialize game world when entering active state
+        initializeGameWorld()
+      } else if (currentGame.status === 'completed') {
+        setGameState('completed')
+      }
+    }
+  }, [currentGame])
   
-  const initializeTestGame = () => {
-    // Create test game
-    setGame({
-      id: 'test-game',
-      name: 'Test Game',
-      status: 'active',
-      max_players: 8,
-      victory_condition: 80,
-      tick_rate: 100,
-      created_at: new Date().toISOString()
-    })
+  const initializeGameWorld = async () => {
+    if (!currentGame || !player) return
     
-    // Create test player
-    setPlayer({
-      id: 'test-player',
-      username: 'TestCommander',
-      credits: 10000,
-      energy: 50000,
-      minerals: 1000,
-      research_points: 0,
-      created_at: new Date().toISOString()
-    })
-    
-    // Generate test solar systems in a 3D grid
+    try {
+      // Load systems for this game
+      const { data: systems, error: systemsError } = await supabase
+        .from('systems')
+        .select('*')
+        .eq('game_id', currentGame.id)
+      
+      if (systemsError) throw systemsError
+      
+      // If no systems exist, generate them
+      if (!systems || systems.length === 0) {
+        await generateGalaxy(currentGame.id)
+        // Reload systems after generation
+        const { data: newSystems } = await supabase
+          .from('systems')
+          .select('*')
+          .eq('game_id', currentGame.id)
+        setSystems(newSystems || [])
+      } else {
+        setSystems(systems)
+      }
+      
+      // Load fleets
+      const { data: fleets, error: fleetsError } = await supabase
+        .from('fleets')
+        .select('*')
+        .eq('game_id', currentGame.id)
+      
+      if (fleetsError) throw fleetsError
+      
+      setFleets(fleets || [])
+    } catch (error) {
+      console.error('Error initializing game world:', error)
+    }
+  }
+  
+  const generateGalaxy = async (gameId: string) => {
     const systems = []
     const gridSize = 5
     const spacing = 50
@@ -45,17 +76,12 @@ function App() {
     for (let x = 0; x < gridSize; x++) {
       for (let y = 0; y < gridSize; y++) {
         for (let z = 0; z < gridSize; z++) {
-          const systemId = `system-${x}-${y}-${z}`
-          const isHomeSystem = x === 2 && y === 2 && z === 2
-          
           systems.push({
-            id: systemId,
-            game_id: 'test-game',
+            game_id: gameId,
             name: `System ${String.fromCharCode(65 + x)}${y}${z}`,
             x_pos: (x - gridSize / 2) * spacing,
             y_pos: (y - gridSize / 2) * spacing,
             z_pos: (z - gridSize / 2) * spacing,
-            owner_id: isHomeSystem ? 'test-player' : undefined,
             energy_generation: 100 + Math.floor(Math.random() * 100),
             has_minerals: Math.random() > 0.7,
             in_nebula: Math.random() > 0.9
@@ -64,45 +90,44 @@ function App() {
       }
     }
     
-    setSystems(systems)
-    
-    // Create test fleets
-    const testFleets = [
-      {
-        id: 'fleet-1',
-        owner_id: 'test-player',
-        type: 'scout' as const,
-        size: 5,
-        position: { x: 0, y: 0, z: 0 },
-        health: 100
-      },
-      {
-        id: 'fleet-2',
-        owner_id: 'test-player',
-        type: 'attack' as const,
-        size: 10,
-        position: { x: 10, y: 5, z: -10 },
-        destination: { x: -20, y: 10, z: 30 },
-        health: 100
-      },
-      {
-        id: 'fleet-3',
-        owner_id: 'enemy',
-        type: 'defense' as const,
-        size: 15,
-        position: { x: -30, y: -10, z: 20 },
-        health: 75
-      }
-    ]
-    
-    setFleets(testFleets)
+    // Insert all systems
+    await supabase.from('systems').insert(systems)
   }
   
-  return (
-    <div className="w-full h-screen bg-black">
-      <Game />
-    </div>
-  )
+  // Render appropriate screen based on game state
+  if (gameState === 'start') {
+    return <StartScreen onGameStart={() => setGameState('lobby')} />
+  }
+  
+  if (gameState === 'lobby') {
+    return <GameLobby onStartGame={() => setGameState('active')} />
+  }
+  
+  if (gameState === 'active') {
+    return (
+      <div className="w-full h-screen bg-black">
+        <Game />
+      </div>
+    )
+  }
+  
+  if (gameState === 'completed') {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center text-white">
+        <div className="text-center">
+          <h1 className="text-4xl font-bold mb-4">Game Over</h1>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+          >
+            Return to Menu
+          </button>
+        </div>
+      </div>
+    )
+  }
+  
+  return null
 }
 
 export default App
