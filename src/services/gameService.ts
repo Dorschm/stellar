@@ -31,7 +31,6 @@ export class GameService {
           max_players: params.maxPlayers,
           victory_condition: params.victoryCondition || 80,
           tick_rate: 100,
-          is_public: params.isPublic || false,
           created_at: new Date().toISOString()
         })
         .select()
@@ -302,7 +301,6 @@ export class GameService {
           game_players (count)
         `)
         .eq('status', 'waiting')
-        .eq('is_public', true)
         .order('created_at', { ascending: false })
         .limit(20)
       
