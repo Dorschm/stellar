@@ -2,30 +2,54 @@
 
 This directory contains SQL migrations for setting up your Supabase database with proper security and structure.
 
-## Files
+## Files (Run in Order)
 
-1. **`add_is_public_column.sql`** - Adds public/private game support
-2. **`setup_rls_policies.sql`** - Production-ready Row Level Security policies
+1. **`00_cleanup_existing_policies.sql`** - Removes conflicting policies
+2. **`01_diagnostic_check.sql`** - Verifies current setup
+3. **`add_is_public_column.sql`** - Adds public/private game support
+4. **`setup_rls_policies.sql`** - Production-ready Row Level Security policies
 
 ## Setup Instructions
 
-Run these scripts in your **Supabase SQL Editor** in this order:
+⚠️ **IMPORTANT**: Run these scripts in your **Supabase SQL Editor** in EXACT order:
 
-### 1. Add Missing Columns
+### Step 1: Clean Up Existing Policies
 
-```bash
-# Run: add_is_public_column.sql
-```
+1. Go to **Supabase Dashboard** → **SQL Editor** → **+ New Query**
+2. Copy and paste entire contents of `00_cleanup_existing_policies.sql`
+3. Click **Run** (or press Ctrl+Enter)
+4. **Verify**: The query at the end should return **0 rows** (or only policies on other tables)
+   - If you see policies listed, the cleanup worked - they're about to be removed
+   - Run the script again if needed
 
-This adds the `is_public` column to support public and private games.
+### Step 2: Check Current Status (Optional)
 
-### 2. Configure Row Level Security
+1. Run `01_diagnostic_check.sql`
+2. This shows you the current state of RLS and policies
+3. Note what you see - helpful for debugging
 
-```bash
-# Run: setup_rls_policies.sql
-```
+### Step 3: Add Missing Columns
 
-This sets up production-ready security policies following the principle of least privilege.
+1. Run entire contents of `add_is_public_column.sql`
+2. **Verify**: You should see `Success. No rows returned`
+3. If you see error about column already existing, that's fine - skip to next step
+
+### Step 4: Apply RLS Policies
+
+1. Run entire contents of `setup_rls_policies.sql`
+2. **Verify**: You should see multiple `Success` messages
+3. **Critical**: If you see ANY errors, read them carefully and report them
+
+### Step 5: Verify It Worked
+
+1. Run `01_diagnostic_check.sql` again
+2. Check output:
+   - **First table**: All tables should show `rls_enabled = true`
+   - **Second table**: Should show multiple policies for each table
+   - **Third table**: Should show `anon` role has grants
+   - **Fourth query**: Should return count without error
+
+If Step 5 passes, restart your dev server and try creating a game!
 
 ## Security Model
 
