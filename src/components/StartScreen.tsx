@@ -31,7 +31,7 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
     if (useGameStore.getState().player) return
     
     try {
-      // Create or get player
+      // First check if player with this username already exists
       const { data: existingPlayer } = await supabase
         .from('players')
         .select()
@@ -41,6 +41,7 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
       if (existingPlayer) {
         setPlayer(existingPlayer)
       } else {
+        // Create new player
         const { data: newPlayer, error } = await supabase
           .from('players')
           .insert({
@@ -54,10 +55,10 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
           .single()
         
         if (error) throw error
-        setPlayer(newPlayer)
+        if (newPlayer) setPlayer(newPlayer)
       }
     } catch (error) {
-      console.error('Error creating player:', error)
+      console.error('Error ensuring player exists:', error)
     }
   }
 
@@ -231,22 +232,36 @@ function CreateGameModal({ username, onClose, onGameCreated }: {
       let player = useGameStore.getState().player
       
       if (!player) {
-        const { data: newPlayer, error: playerError } = await supabase
+        // First check if player with this username already exists
+        const { data: existingPlayer } = await supabase
           .from('players')
-          .insert({
-            username: username.trim(),
-            credits: 10000,
-            energy: 50000,
-            minerals: 1000,
-            research_points: 0
-          })
           .select()
+          .eq('username', username.trim())
           .single()
+        
+        if (existingPlayer) {
+          // Use existing player
+          player = existingPlayer
+          setPlayer(existingPlayer)
+        } else {
+          // Create new player
+          const { data: newPlayer, error: playerError } = await supabase
+            .from('players')
+            .insert({
+              username: username.trim(),
+              credits: 10000,
+              energy: 50000,
+              minerals: 1000,
+              research_points: 0
+            })
+            .select()
+            .single()
 
-        if (playerError) throw playerError
-        if (!newPlayer) throw new Error('Failed to create player')
-        player = newPlayer
-        setPlayer(newPlayer)
+          if (playerError) throw playerError
+          if (!newPlayer) throw new Error('Failed to create player')
+          player = newPlayer
+          setPlayer(newPlayer)
+        }
       }
 
       // Create game using gameService (OpenFront pattern)
@@ -357,22 +372,36 @@ function JoinGameModal({ username, onClose, onGameJoined }: {
       let player = useGameStore.getState().player
       
       if (!player) {
-        const { data: newPlayer, error: playerError } = await supabase
+        // First check if player with this username already exists
+        const { data: existingPlayer } = await supabase
           .from('players')
-          .insert({
-            username: username.trim(),
-            credits: 10000,
-            energy: 50000,
-            minerals: 1000,
-            research_points: 0
-          })
           .select()
+          .eq('username', username.trim())
           .single()
+        
+        if (existingPlayer) {
+          // Use existing player
+          player = existingPlayer
+          setPlayer(existingPlayer)
+        } else {
+          // Create new player
+          const { data: newPlayer, error: playerError } = await supabase
+            .from('players')
+            .insert({
+              username: username.trim(),
+              credits: 10000,
+              energy: 50000,
+              minerals: 1000,
+              research_points: 0
+            })
+            .select()
+            .single()
 
-        if (playerError) throw playerError
-        if (!newPlayer) throw new Error('Failed to create player')
-        player = newPlayer
-        setPlayer(newPlayer)
+          if (playerError) throw playerError
+          if (!newPlayer) throw new Error('Failed to create player')
+          player = newPlayer
+          setPlayer(newPlayer)
+        }
       }
 
       // Join game using gameService (OpenFront pattern)
