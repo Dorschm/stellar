@@ -1,7 +1,7 @@
 // Territory control mechanics adapted from OpenFront for 3D space
 import type { System } from '../services/supabase'
 import { useGameStore } from '../store/gameStore'
-import { GameEngine, Vector3D } from './GameEngine'
+import { GameEngine } from './GameEngine'
 
 export interface Territory {
   systems: System[]
@@ -20,7 +20,6 @@ export interface TerritoryUpdate {
 
 export class TerritoryControl {
   private gameEngine: GameEngine
-  private territoryMap: Map<string, Territory> = new Map()
   private systemOwnership: Map<string, string> = new Map()
   
   constructor() {

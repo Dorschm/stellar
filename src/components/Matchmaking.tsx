@@ -18,7 +18,7 @@ export function MatchmakingModal({ isOpen, onClose, onMatchFound }: MatchmakingM
   useEffect(() => {
     if (!isOpen || !player) return
     
-    let checkInterval: NodeJS.Timeout
+    let checkInterval: ReturnType<typeof setInterval>
     
     const findMatch = async () => {
       setStatus('searching')

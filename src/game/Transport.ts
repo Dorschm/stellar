@@ -51,7 +51,6 @@ export class Transport {
   private channel: RealtimeChannel | null = null
   private gameEngine: GameEngine
   private pendingIntents: Intent[] = []
-  private lastProcessedTick: number = 0
   private isHost: boolean = false
   
   constructor() {
@@ -199,7 +198,6 @@ export class Transport {
       })
     }
     
-    this.lastProcessedTick = update.tick
   }
   
   private handlePresenceSync() {
@@ -227,8 +225,6 @@ export class Transport {
   }
   
   private processIntents(tick: number) {
-    const store = useGameStore.getState()
-    
     // Group intents by tick
     const intentsForTick = this.pendingIntents.filter(i => i.tick <= tick)
     this.pendingIntents = this.pendingIntents.filter(i => i.tick > tick)

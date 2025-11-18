@@ -182,7 +182,7 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
         <MatchmakingModal
           isOpen={showMatchmaking}
           onClose={() => setShowMatchmaking(false)}
-          onMatchFound={(gameId) => {
+          onMatchFound={() => {
             setShowMatchmaking(false)
             onGameStart()
           }}
@@ -202,7 +202,7 @@ export function StartScreen({ onGameStart }: StartScreenProps) {
                 ✕
               </button>
             </div>
-            <PublicLobby onJoinGame={(gameId) => {
+            <PublicLobby onJoinGame={() => {
               setShowPublicLobby(false)
               onGameStart()
             }} />

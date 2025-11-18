@@ -1,6 +1,5 @@
 // Resource generation and management system adapted from OpenFront
 import { useGameStore } from '../store/gameStore'
-import type { System } from '../services/supabase'
 
 export interface ResourceGeneration {
   energy: number
@@ -137,7 +136,6 @@ export class ResourceSystem {
   // Trade resources between players
   tradeResources(
     fromPlayerId: string,
-    toPlayerId: string,
     resourceType: 'credits' | 'minerals' | 'energy',
     amount: number
   ): boolean {

@@ -1,6 +1,6 @@
 // Game service adapted from OpenFront's server-side architecture
 import { supabase } from './supabase'
-import type { Game, Player, System } from './supabase'
+import type { Game, System } from './supabase'
 
 export interface CreateGameParams {
   name: string
