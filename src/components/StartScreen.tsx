@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { supabase } from '../services/supabase'
 import { gameService } from '../services/gameService'
 import { useGameStore } from '../store/gameStore'
@@ -344,13 +344,9 @@ function JoinGameModal({ username, onClose, onGameJoined }: {
   const setPlayer = useGameStore(state => state.setPlayer)
   const setGame = useGameStore(state => state.setGame)
 
-  // Load available games
-  useState(() => {
-    loadGames()
-  })
-
   const loadGames = async () => {
     try {
+      setIsLoading(true)
       const { data, error } = await supabase
         .from('games')
         .select('*, game_players(count)')
@@ -365,6 +361,10 @@ function JoinGameModal({ username, onClose, onGameJoined }: {
       setIsLoading(false)
     }
   }
+
+  useEffect(() => {
+    loadGames()
+  }, [])
 
   const handleJoin = async (gameId: string) => {
     try {

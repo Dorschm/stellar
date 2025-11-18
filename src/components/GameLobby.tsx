@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../services/supabase'
 import { gameService } from '../services/gameService'
 import { useGameStore } from '../store/gameStore'
@@ -17,9 +17,15 @@ interface PlayerInLobby {
 export function GameLobby({ onStartGame }: GameLobbyProps) {
   const currentGame = useGameStore(state => state.currentGame)
   const player = useGameStore(state => state.player)
+  const setGame = useGameStore(state => state.setGame)
   const [players, setPlayers] = useState<PlayerInLobby[]>([])
   const [isHost, setIsHost] = useState(false)
   const [isStarting, setIsStarting] = useState(false)
+  const hasEnteredRef = useRef(false)
+
+  useEffect(() => {
+    hasEnteredRef.current = false
+  }, [currentGame?.id])
 
   useEffect(() => {
     if (!currentGame) return
@@ -51,9 +57,14 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
           table: 'games',
           filter: `id=eq.${currentGame.id}`
         },
-        (payload: any) => {
+        async (payload: any) => {
           console.log('Game status change:', payload)
-          if (payload.new.status === 'active') {
+          if (payload.new.status === 'active' && !hasEnteredRef.current) {
+            const updatedGame = await gameService.getGameInfo(currentGame.id)
+            if (updatedGame) {
+              setGame(updatedGame)
+            }
+            hasEnteredRef.current = true
             onStartGame()
           }
         }
@@ -64,6 +75,32 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
       supabase.removeChannel(channel)
     }
   }, [currentGame, onStartGame])
+
+  useEffect(() => {
+    if (!currentGame) return
+
+    let cancelled = false
+
+    const checkGameStatus = async () => {
+      try {
+        const updatedGame = await gameService.getGameInfo(currentGame.id)
+        if (!cancelled && updatedGame?.status === 'active' && !hasEnteredRef.current) {
+          setGame(updatedGame)
+          hasEnteredRef.current = true
+          onStartGame()
+        }
+      } catch (error) {
+        console.error('Error checking game status:', error)
+      }
+    }
+
+    const interval = setInterval(checkGameStatus, 2000)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [currentGame, onStartGame, setGame])
 
   const loadPlayers = async () => {
     if (!currentGame) return
@@ -116,10 +153,19 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
         throw new Error('Failed to start game')
       }
 
-      // The subscription will trigger onStartGame when status changes
+      // Update local store with fresh game info
+      const updatedGame = await gameService.getGameInfo(currentGame.id)
+      if (updatedGame) {
+        setGame(updatedGame)
+      }
+
+      // Navigate host into the game immediately
+      hasEnteredRef.current = true
+      onStartGame()
     } catch (error) {
       console.error('Error starting game:', error)
       alert('Failed to start game: ' + (error as Error).message)
+    } finally {
       setIsStarting(false)
     }
   }

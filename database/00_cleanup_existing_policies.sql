@@ -1,68 +1,26 @@
 -- Cleanup script - Run this FIRST to remove any existing policies
 -- This prevents conflicts when applying new policies
+-- This will drop ALL policies on ALL your game tables
 
--- Drop all existing policies on players table
+-- Universal cleanup for ALL tables
 DO $$ 
 DECLARE
     r RECORD;
+    table_list text[] := ARRAY['players', 'games', 'game_players', 'systems', 'fleets', 
+                                'structures', 'trade_routes', 'combat_logs', 'alliances'];
+    tbl text;
 BEGIN
-    FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = 'players') LOOP
-        EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(r.policyname) || ' ON players';
+    FOREACH tbl IN ARRAY table_list
+    LOOP
+        -- Check if table exists
+        IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = tbl) THEN
+            -- Drop all policies on this table
+            FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = tbl) LOOP
+                EXECUTE format('DROP POLICY IF EXISTS %I ON %I', r.policyname, tbl);
+                RAISE NOTICE 'Dropped policy % on table %', r.policyname, tbl;
+            END LOOP;
+        END IF;
     END LOOP;
-END $$;
-
--- Drop all existing policies on games table
-DO $$ 
-DECLARE
-    r RECORD;
-BEGIN
-    FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = 'games') LOOP
-        EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(r.policyname) || ' ON games';
-    END LOOP;
-END $$;
-
--- Drop all existing policies on game_players table
-DO $$ 
-DECLARE
-    r RECORD;
-BEGIN
-    FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = 'game_players') LOOP
-        EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(r.policyname) || ' ON game_players';
-    END LOOP;
-END $$;
-
--- Drop all existing policies on systems table
-DO $$ 
-DECLARE
-    r RECORD;
-BEGIN
-    FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = 'systems') LOOP
-        EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(r.policyname) || ' ON systems';
-    END LOOP;
-END $$;
-
--- Drop all existing policies on fleets table (if exists)
-DO $$ 
-DECLARE
-    r RECORD;
-BEGIN
-    IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'fleets') THEN
-        FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = 'fleets') LOOP
-            EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(r.policyname) || ' ON fleets';
-        END LOOP;
-    END IF;
-END $$;
-
--- Drop all existing policies on structures table (if exists)
-DO $$ 
-DECLARE
-    r RECORD;
-BEGIN
-    IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'structures') THEN
-        FOR r IN (SELECT policyname FROM pg_policies WHERE tablename = 'structures') LOOP
-            EXECUTE 'DROP POLICY IF EXISTS ' || quote_ident(r.policyname) || ' ON structures';
-        END LOOP;
-    END IF;
 END $$;
 
 -- Verification: List remaining policies
