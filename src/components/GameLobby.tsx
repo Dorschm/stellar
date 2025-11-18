@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../services/supabase'
+import { gameService } from '../services/gameService'
 import { useGameStore } from '../store/gameStore'
 
 interface GameLobbyProps {
@@ -104,25 +105,21 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
   }
 
   const handleStartGame = async () => {
-    if (!currentGame || !isHost) return
+    if (!currentGame || !isHost || !player) return
 
     setIsStarting(true)
     try {
-      // Update game status to active
-      const { error } = await supabase
-        .from('games')
-        .update({
-          status: 'active',
-          started_at: new Date().toISOString()
-        })
-        .eq('id', currentGame.id)
-
-      if (error) throw error
+      // Start game using gameService (OpenFront pattern)
+      const success = await gameService.startGame(currentGame.id, player.id)
+      
+      if (!success) {
+        throw new Error('Failed to start game')
+      }
 
       // The subscription will trigger onStartGame when status changes
     } catch (error) {
       console.error('Error starting game:', error)
-      alert('Failed to start game')
+      alert('Failed to start game: ' + (error as Error).message)
       setIsStarting(false)
     }
   }

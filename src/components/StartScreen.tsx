@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '../services/supabase'
+import { gameService } from '../services/gameService'
 import { useGameStore } from '../store/gameStore'
 import { MatchmakingModal } from './Matchmaking'
 import { PublicLobby } from './PublicLobby'
@@ -226,52 +227,41 @@ function CreateGameModal({ username, onClose, onGameCreated }: {
   const handleCreate = async () => {
     setIsCreating(true)
     try {
-      // Create player
-      const { data: player, error: playerError } = await supabase
-        .from('players')
-        .insert({
-          username: username.trim(),
-          credits: 10000,
-          energy: 50000,
-          minerals: 1000,
-          research_points: 0
-        })
-        .select()
-        .single()
+      // Ensure player exists
+      let player = useGameStore.getState().player
+      
+      if (!player) {
+        const { data: newPlayer, error: playerError } = await supabase
+          .from('players')
+          .insert({
+            username: username.trim(),
+            credits: 10000,
+            energy: 50000,
+            minerals: 1000,
+            research_points: 0
+          })
+          .select()
+          .single()
 
-      if (playerError) throw playerError
-      setPlayer(player)
+        if (playerError) throw playerError
+        if (!newPlayer) throw new Error('Failed to create player')
+        player = newPlayer
+        setPlayer(newPlayer)
+      }
 
-      // Create game
-      const { data: game, error: gameError } = await supabase
-        .from('games')
-        .insert({
-          name: gameName,
-          status: 'waiting',
-          max_players: maxPlayers,
-          victory_condition: 80,
-          tick_rate: 100
-        })
-        .select()
-        .single()
-
-      if (gameError) throw gameError
-
-      // Add player as host
-      await supabase
-        .from('game_players')
-        .insert({
-          game_id: game.id,
-          player_id: player.id,
-          empire_color: '#' + Math.floor(Math.random()*16777215).toString(16),
-          placement_order: 1
-        })
+      // Create game using gameService (OpenFront pattern)
+      const game = await gameService.createGame(player!.id, {
+        name: gameName,
+        maxPlayers: maxPlayers,
+        victoryCondition: 80,
+        isPublic: false
+      })
 
       setGame(game)
       onGameCreated()
     } catch (error) {
       console.error('Error creating game:', error)
-      alert('Failed to create game')
+      alert('Failed to create game: ' + (error as Error).message)
     } finally {
       setIsCreating(false)
     }
@@ -363,45 +353,48 @@ function JoinGameModal({ username, onClose, onGameJoined }: {
 
   const handleJoin = async (gameId: string) => {
     try {
-      // Create player
-      const { data: player, error: playerError } = await supabase
-        .from('players')
-        .insert({
-          username: username.trim(),
-          credits: 10000,
-          energy: 50000,
-          minerals: 1000,
-          research_points: 0
-        })
-        .select()
-        .single()
+      // Ensure player exists
+      let player = useGameStore.getState().player
+      
+      if (!player) {
+        const { data: newPlayer, error: playerError } = await supabase
+          .from('players')
+          .insert({
+            username: username.trim(),
+            credits: 10000,
+            energy: 50000,
+            minerals: 1000,
+            research_points: 0
+          })
+          .select()
+          .single()
 
-      if (playerError) throw playerError
-      setPlayer(player)
+        if (playerError) throw playerError
+        if (!newPlayer) throw new Error('Failed to create player')
+        player = newPlayer
+        setPlayer(newPlayer)
+      }
 
-      // Join game
-      const { data: game, error: gameError } = await supabase
-        .from('games')
-        .select()
-        .eq('id', gameId)
-        .single()
+      // Join game using gameService (OpenFront pattern)
+      const success = await gameService.joinGame({
+        gameId,
+        playerId: player!.id,
+        empireColor: '#' + Math.floor(Math.random()*16777215).toString(16)
+      })
 
-      if (gameError) throw gameError
+      if (!success) {
+        throw new Error('Failed to join game')
+      }
 
-      await supabase
-        .from('game_players')
-        .insert({
-          game_id: game.id,
-          player_id: player.id,
-          empire_color: '#' + Math.floor(Math.random()*16777215).toString(16),
-          placement_order: 2
-        })
-
-      setGame(game)
-      onGameJoined()
+      // Load game data
+      const game = await gameService.getGameInfo(gameId)
+      if (game) {
+        setGame(game)
+        onGameJoined()
+      }
     } catch (error) {
       console.error('Error joining game:', error)
-      alert('Failed to join game')
+      alert('Failed to join game: ' + (error as Error).message)
     }
   }
 
