@@ -15,6 +15,9 @@ export function SolarSystem({ system }: SolarSystemProps) {
   const selectSystem = useGameStore(state => state.selectSystem)
   const selectedSystem = useGameStore(state => state.selectedSystem)
   const player = useGameStore(state => state.player)
+  const commandMode = useGameStore(state => state.commandMode)
+  const moveFleet = useGameStore(state => state.moveFleet)
+  const setCommandMode = useGameStore(state => state.setCommandMode)
   
   const isSelected = selectedSystem?.id === system.id
   const isOwned = system.owner_id === player?.id
@@ -41,7 +44,14 @@ export function SolarSystem({ system }: SolarSystemProps) {
         args={[2, 32, 32]}
         onPointerOver={() => setHovered(true)}
         onPointerOut={() => setHovered(false)}
-        onClick={() => selectSystem(system)}
+        onClick={() => {
+          if (commandMode?.type === 'move_fleet') {
+            moveFleet(commandMode.fleetId, { x: system.x_pos, y: system.y_pos, z: system.z_pos })
+            setCommandMode(null)
+          } else {
+            selectSystem(system)
+          }
+        }}
       >
         <meshStandardMaterial
           color={systemColor}

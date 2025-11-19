@@ -1,6 +1,7 @@
 // Game service adapted from OpenFront's server-side architecture
 import { supabase } from './supabase'
 import type { Game, System } from './supabase'
+import { REAL_STELLAR_SYSTEMS } from '../data/stellarSystems'
 
 export interface CreateGameParams {
   name: string
@@ -18,6 +19,7 @@ export interface JoinGameParams {
 }
 
 export class GameService {
+  private static readonly STARTING_TROOP_COUNT = 100
   
   // Create a new game (adapted from OpenFront's /api/create_game)
   async createGame(creatorPlayerId: string, params: CreateGameParams): Promise<Game> {
@@ -32,6 +34,7 @@ export class GameService {
           victory_condition: params.victoryCondition || 80,
           tick_rate: 100,
           is_public: params.isPublic || false,
+          difficulty: params.difficulty || 'normal',
           created_at: new Date().toISOString()
         })
         .select()
@@ -124,18 +127,38 @@ export class GameService {
   // Start the game (adapted from OpenFront's /api/start_game)
   async startGame(gameId: string, hostPlayerId: string): Promise<boolean> {
     try {
+      // Fetch game info for capacity calculations
+      const { data: gameRecord, error: gameRecordError } = await supabase
+        .from('games')
+        .select('id, max_players, status, difficulty')
+        .eq('id', gameId)
+        .single()
+
+      if (gameRecordError) throw gameRecordError
+      if (!gameRecord) {
+        console.error('Game not found')
+        return false
+      }
+
+      if (gameRecord.status !== 'waiting') {
+        console.error('Game already started')
+        return false
+      }
+
       // Verify the player is the host (first player)
-      const { data: players, error: playersError } = await supabase
+      const { data: initialPlayers, error: playersError } = await supabase
         .from('game_players')
         .select('*')
         .eq('game_id', gameId)
         .order('placement_order', { ascending: true })
       
       if (playersError) throw playersError
-      if (!players || players.length === 0) {
+      if (!initialPlayers || initialPlayers.length === 0) {
         console.error('No players in game')
         return false
       }
+
+      let players = initialPlayers
       
       // Check if requestor is the host
       if (players[0].player_id !== hostPlayerId) {
@@ -147,6 +170,29 @@ export class GameService {
       if (players.length < 1) {
         console.error('Not enough players to start')
         return false
+      }
+
+      // Auto-fill with bot players if lobby isn't full
+      const botsNeeded = Math.max(0, (gameRecord.max_players || players.length) - players.length)
+      if (botsNeeded > 0) {
+        const difficulty = gameRecord.difficulty || 'normal'
+        const { error: botsError } = await supabase.rpc('add_bots_to_game', {
+          game_id: gameId,
+          num_bots: botsNeeded,
+          p_difficulty: difficulty
+        })
+
+        if (botsError) throw botsError
+
+        const { data: refreshedPlayers, error: refreshedPlayersError } = await supabase
+          .from('game_players')
+          .select('*')
+          .eq('game_id', gameId)
+          .order('placement_order', { ascending: true })
+
+        if (refreshedPlayersError) throw refreshedPlayersError
+        if (!refreshedPlayers) throw new Error('Failed to retrieve players after adding bots')
+        players = refreshedPlayers
       }
       
       // Update game status to active
@@ -160,10 +206,13 @@ export class GameService {
       
       if (updateError) throw updateError
       
-      // Generate galaxy for the game
-      await this.generateGalaxy(gameId, players.length)
+      // Generate solar-system scale map for the game
+      await this.generateSolarSystemMap(gameId, players.length)
+
+      // Assign initial planets to each player
+      await this.assignStartingPlanets(gameId, players)
       
-      console.log(`Game ${gameId} started with ${players.length} players`)
+      console.log(`Game ${gameId} started with ${players.length} players (difficulty: ${gameRecord.difficulty || 'normal'})`)
       
       return true
     } catch (error) {
@@ -172,42 +221,65 @@ export class GameService {
     }
   }
   
-  // Generate galaxy (adapted from OpenFront's map generation)
-  private async generateGalaxy(gameId: string, playerCount: number): Promise<void> {
+  // Generate a solar-system scale map using real Milky Way data
+  private async generateSolarSystemMap(gameId: string, playerCount: number): Promise<void> {
     try {
-      const systems: Omit<System, 'id' | 'created_at'>[] = []
-      const gridSize = Math.max(5, Math.ceil(Math.cbrt(playerCount * 20))) // Scale with players
-      const spacing = 50
-      
-      // Generate systems in 3D grid
-      for (let x = 0; x < gridSize; x++) {
-        for (let y = 0; y < gridSize; y++) {
-          for (let z = 0; z < gridSize; z++) {
-            systems.push({
-              game_id: gameId,
-              name: `System ${String.fromCharCode(65 + x)}${y}${z}`,
-              x_pos: (x - gridSize / 2) * spacing,
-              y_pos: (y - gridSize / 2) * spacing,
-              z_pos: (z - gridSize / 2) * spacing,
-              owner_id: undefined,
-              energy_generation: 100 + Math.floor(Math.random() * 100),
-              has_minerals: Math.random() > 0.7,
-              in_nebula: Math.random() > 0.9
-            })
-          }
-        }
+      const viableSystems = REAL_STELLAR_SYSTEMS.filter(system => system.planets.length >= 4)
+      if (viableSystems.length === 0) {
+        throw new Error('No viable stellar systems available for map generation')
       }
-      
-      // Insert all systems
+
+      const selectedSystem = viableSystems[Math.floor(Math.random() * viableSystems.length)]
+      const orbitalScale = 350 // scales AU distances into gameplay space
+      const systems: Omit<System, 'id' | 'created_at'>[] = []
+
+      selectedSystem.planets.forEach((planet, index) => {
+        const orbitalAngle = (2 * Math.PI * index) / selectedSystem.planets.length + Math.random() * 0.4
+        const distance = Math.max(planet.semiMajorAxisAu, 0.02) * orbitalScale + 50
+        const inclination = (Math.random() - 0.5) * 0.25
+
+        systems.push({
+          game_id: gameId,
+          name: planet.name,
+          x_pos: Math.cos(orbitalAngle) * distance,
+          y_pos: Math.sin(orbitalAngle) * distance,
+          z_pos: distance * inclination,
+          owner_id: undefined,
+          troop_count: 0,
+          energy_generation: 80 + Math.round(planet.radiusEarth * 12),
+          has_minerals: planet.radiusEarth >= 1.5,
+          in_nebula: planet.orbitalEccentricity ? planet.orbitalEccentricity > 0.2 : Math.random() > 0.85
+        })
+      })
+
+      // Add additional resource nodes (asteroid belts) for parity with OpenFront pacing
+      const supplementalNodes = Math.max(playerCount * 2, 6)
+      for (let i = 0; i < supplementalNodes; i++) {
+        const orbit = 200 + i * 60
+        const theta = Math.random() * Math.PI * 2
+        systems.push({
+          game_id: gameId,
+          name: `Asteroid Belt ${i + 1}`,
+          x_pos: Math.cos(theta) * orbit,
+          y_pos: Math.sin(theta) * orbit,
+          z_pos: (Math.random() - 0.5) * 80,
+          owner_id: undefined,
+          troop_count: 0,
+          energy_generation: 60 + Math.floor(Math.random() * 40),
+          has_minerals: true,
+          in_nebula: Math.random() > 0.7
+        })
+      }
+
       const { error } = await supabase
         .from('systems')
         .insert(systems)
-      
+
       if (error) throw error
-      
-      console.log(`Generated ${systems.length} systems for game ${gameId}`)
+
+      console.log(`Generated solar system map '${selectedSystem.name}' with ${systems.length} nodes for game ${gameId}`)
     } catch (error) {
-      console.error('Error generating galaxy:', error)
+      console.error('Error generating solar-system map:', error)
       throw error
     }
   }
@@ -328,6 +400,43 @@ export class GameService {
       '#FFA726', // Orange
     ]
     return colors[Math.floor(Math.random() * colors.length)]
+  }
+
+  private async assignStartingPlanets(gameId: string, players: { player_id: string }[]): Promise<void> {
+    if (players.length === 0) return
+
+    const { data: neutralSystems, error: systemsError } = await supabase
+      .from('systems')
+      .select('id')
+      .eq('game_id', gameId)
+      .is('owner_id', null)
+
+    if (systemsError) throw systemsError
+    if (!neutralSystems || neutralSystems.length < players.length) {
+      throw new Error('Not enough neutral systems available to assign starting planets')
+    }
+
+    const availableSystems = [...neutralSystems]
+
+    for (const player of players) {
+      const systemIndex = Math.floor(Math.random() * availableSystems.length)
+      const [assignedSystem] = availableSystems.splice(systemIndex, 1)
+
+      const { error: updateSystemError } = await supabase
+        .from('systems')
+        .update({ owner_id: player.player_id, troop_count: GameService.STARTING_TROOP_COUNT })
+        .eq('id', assignedSystem.id)
+
+      if (updateSystemError) throw updateSystemError
+
+      const { error: updatePlayerError } = await supabase
+        .from('game_players')
+        .update({ systems_controlled: 1 })
+        .eq('game_id', gameId)
+        .eq('player_id', player.player_id)
+
+      if (updatePlayerError) throw updatePlayerError
+    }
   }
 }
 

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useGameStore } from '../store/gameStore'
+import { ResourceSystem } from '../game/ResourceSystem'
 
 interface Structure {
   id: string
@@ -19,48 +20,48 @@ const STRUCTURES: Structure[] = [
     id: 'trade-station',
     name: 'Trade Station',
     type: 'economic',
-    cost: { credits: 50000, minerals: 500, energy: 1000 },
-    description: 'Generates credits through trade routes',
+    cost: ResourceSystem.COSTS.BUILD_STRUCTURE_TRADE,
+    description: 'Generates +10 credits per connected friendly planet within 100 units',
     icon: '💰'
   },
   {
     id: 'mining-station',
     name: 'Mining Station',
     type: 'economic',
-    cost: { credits: 50000, minerals: 200, energy: 500 },
-    description: 'Extracts minerals from asteroid fields',
+    cost: ResourceSystem.COSTS.BUILD_STRUCTURE_MINING,
+    description: 'Extracts 50 minerals per tick on mineral-rich planets',
     icon: '⛏️'
   },
   {
     id: 'colony-station',
     name: 'Colony Station',
     type: 'economic',
-    cost: { credits: 100000, minerals: 1000, energy: 2000 },
-    description: 'Increases energy capacity by 25,000',
+    cost: ResourceSystem.COSTS.BUILD_STRUCTURE_COLONY,
+    description: 'Increases troop capacity by +100 per level',
     icon: '🏙️'
   },
   {
     id: 'defense-platform',
     name: 'Defense Platform',
     type: 'military',
-    cost: { credits: 25000, minerals: 500, energy: 500 },
-    description: '5x defense multiplier in range',
+    cost: ResourceSystem.COSTS.BUILD_STRUCTURE_DEFENSE,
+    description: 'Provides 5x defense multiplier to nearby planets (50 unit range)',
     icon: '🛡️'
   },
   {
     id: 'missile-battery',
     name: 'Missile Battery',
     type: 'military',
-    cost: { credits: 75000, minerals: 1000, energy: 1000 },
-    description: 'Launch space torpedoes at enemies',
+    cost: ResourceSystem.COSTS.BUILD_STRUCTURE_MISSILE,
+    description: 'Launch space torpedoes at enemy positions',
     icon: '🚀'
   },
   {
     id: 'point-defense',
     name: 'Point Defense',
     type: 'military',
-    cost: { credits: 50000, minerals: 750, energy: 750 },
-    description: 'Intercepts incoming torpedoes',
+    cost: ResourceSystem.COSTS.BUILD_STRUCTURE_POINT_DEFENSE,
+    description: 'Intercepts incoming torpedoes and missiles',
     icon: '🎯'
   }
 ]
@@ -73,22 +74,38 @@ interface BuildMenuProps {
 
 export function BuildMenu({ isOpen, onClose, systemId }: BuildMenuProps) {
   const [selectedStructure, setSelectedStructure] = useState<Structure | null>(null)
+  const [isBuilding, setIsBuilding] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const resources = useGameStore(state => state.resources)
   const buildStructure = useGameStore(state => state.buildStructure)
   
   if (!isOpen || !systemId) return null
   
   const canAfford = (structure: Structure) => {
-    return resources.credits >= structure.cost.credits &&
-           resources.minerals >= structure.cost.minerals &&
-           resources.energy >= structure.cost.energy
+    return Number(resources.gold) >= (structure.cost.credits || 0) &&
+           resources.minerals >= (structure.cost.minerals || 0) &&
+           resources.energy >= (structure.cost.energy || 0)
   }
   
-  const handleBuild = (structure: Structure) => {
-    if (canAfford(structure)) {
-      buildStructure(systemId, structure.type)
-      // TODO: Deduct resources
+  const handleBuild = async (structure: Structure) => {
+    if (!canAfford(structure)) {
+      setErrorMessage('Insufficient resources!')
+      setTimeout(() => setErrorMessage(null), 3000)
+      return
+    }
+    
+    setIsBuilding(true)
+    setErrorMessage(null)
+    
+    const success = await buildStructure(systemId, structure.id)
+    
+    setIsBuilding(false)
+    
+    if (success) {
       onClose()
+    } else {
+      setErrorMessage('Failed to build structure. Try again.')
+      setTimeout(() => setErrorMessage(null), 3000)
     }
   }
   
@@ -100,10 +117,17 @@ export function BuildMenu({ isOpen, onClose, systemId }: BuildMenuProps) {
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-white transition-colors"
+            disabled={isBuilding}
           >
             ✕
           </button>
         </div>
+        
+        {errorMessage && (
+          <div className="mb-4 p-3 bg-red-900/50 border border-red-500 rounded text-red-200 text-sm">
+            {errorMessage}
+          </div>
+        )}
         
         <div className="grid grid-cols-2 gap-4 overflow-y-auto max-h-[60vh]">
           {STRUCTURES.map(structure => (
@@ -127,7 +151,7 @@ export function BuildMenu({ isOpen, onClose, systemId }: BuildMenuProps) {
                   
                   {/* Cost */}
                   <div className="flex space-x-3 text-sm">
-                    <span className={`${resources.credits >= structure.cost.credits ? 'text-green-400' : 'text-red-400'}`}>
+                    <span className={`${Number(resources.gold) >= structure.cost.credits ? 'text-green-400' : 'text-red-400'}`}>
                       💰 {structure.cost.credits.toLocaleString()}
                     </span>
                     <span className={`${resources.minerals >= structure.cost.minerals ? 'text-blue-400' : 'text-red-400'}`}>
@@ -153,16 +177,16 @@ export function BuildMenu({ isOpen, onClose, systemId }: BuildMenuProps) {
           </button>
           <button
             onClick={() => selectedStructure && handleBuild(selectedStructure)}
-            disabled={!selectedStructure || !canAfford(selectedStructure)}
+            disabled={!selectedStructure || !canAfford(selectedStructure) || isBuilding}
             className={`
               px-4 py-2 rounded transition-colors text-white
-              ${selectedStructure && canAfford(selectedStructure)
+              ${selectedStructure && canAfford(selectedStructure) && !isBuilding
                 ? 'bg-blue-600 hover:bg-blue-700'
                 : 'bg-gray-700 opacity-50 cursor-not-allowed'
               }
             `}
           >
-            Build
+            {isBuilding ? 'Building...' : 'Build'}
           </button>
         </div>
       </div>

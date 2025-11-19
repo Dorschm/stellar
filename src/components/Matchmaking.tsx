@@ -1,7 +1,11 @@
 // Matchmaking system adapted from OpenFront
 import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
+import { gameService } from '../services/gameService'
 import { useGameStore } from '../store/gameStore'
+
+const SEARCH_INTERVAL_MS = 2000
+const CREATE_GAME_DELAY_MS = 15000
 
 interface MatchmakingModalProps {
   isOpen: boolean
@@ -17,65 +21,117 @@ export function MatchmakingModal({ isOpen, onClose, onMatchFound }: MatchmakingM
   
   useEffect(() => {
     if (!isOpen || !player) return
-    
-    let checkInterval: ReturnType<typeof setInterval>
-    
-    const findMatch = async () => {
-      setStatus('searching')
-      
-      // Look for games needing players
-      const { data: waitingGames, error } = await supabase
-        .from('games')
-        .select(`
-          *,
-          game_players!inner(count)
-        `)
-        .eq('status', 'waiting')
-        .lt('game_players.count', 'max_players')
-        .order('created_at', { ascending: true })
-        .limit(1)
-      
-      if (error) {
-        console.error('Matchmaking error:', error)
-        return
+
+    let cancelled = false
+    let checkInterval: ReturnType<typeof setInterval> | null = null
+    let searchInterval: ReturnType<typeof setInterval> | null = null
+    let createTimeout: ReturnType<typeof setTimeout> | null = null
+
+    const clearSearchTimers = () => {
+      if (searchInterval) {
+        clearInterval(searchInterval)
+        searchInterval = null
       }
-      
-      if (waitingGames && waitingGames.length > 0) {
-        // Join existing game
-        const game = waitingGames[0]
-        await joinGame(game)
-      } else {
-        // Create new game
-        await createMatchmakingGame()
+      if (createTimeout) {
+        clearTimeout(createTimeout)
+        createTimeout = null
       }
     }
-    
+
+    const cleanup = () => {
+      clearSearchTimers()
+      if (checkInterval) {
+        clearInterval(checkInterval)
+        checkInterval = null
+      }
+    }
+
+    const checkGameStatus = async (gameId: string) => {
+      const { data, error } = await supabase
+        .from('games')
+        .select('*, game_players(count)')
+        .eq('id', gameId)
+        .single()
+
+      if (error) {
+        console.error('Error checking game status:', error)
+        return
+      }
+
+      if (data.game_players?.[0]?.count >= 2) {
+        await supabase
+          .from('games')
+          .update({
+            status: 'active',
+            started_at: new Date().toISOString()
+          })
+          .eq('id', gameId)
+
+        if (!cancelled) {
+          setStatus('found')
+          onMatchFound(gameId)
+        }
+        return true
+      }
+
+      return false
+    }
+
     const joinGame = async (game: any) => {
       try {
-        // Add player to game
+        const players = Array.isArray(game.game_players) ? game.game_players : []
+        const alreadyInGame = players.some((p: any) => p.player_id === player.id)
+
+        if (alreadyInGame) {
+          if (!cancelled) {
+            const updatedGame = await gameService.getGameInfo(game.id)
+            if (updatedGame) {
+              setGame(updatedGame)
+              setMatchData(updatedGame)
+            }
+            setStatus('found')
+            onMatchFound(game.id)
+            cleanup()
+          }
+          return
+        }
+
+        const placementOrder = players.length + 1
+
         const { error } = await supabase
           .from('game_players')
           .insert({
             game_id: game.id,
             player_id: player.id,
             empire_color: generateRandomColor(),
-            placement_order: (game.game_players?.[0]?.count || 0) + 1
+            placement_order: placementOrder
           })
-        
-        if (error) throw error
-        
-        setGame(game)
-        setMatchData(game)
-        setStatus('found')
-        onMatchFound(game.id)
+
+        if (error) {
+          if (error.code === '23505') {
+            console.log('Player already joined game, continuing')
+          } else {
+            throw error
+          }
+        }
+
+        if (!cancelled) {
+          const updatedGame = await gameService.getGameInfo(game.id)
+          if (updatedGame) {
+            setGame(updatedGame)
+            setMatchData(updatedGame)
+          }
+          setStatus('found')
+          onMatchFound(game.id)
+          cleanup()
+        }
       } catch (error) {
         console.error('Error joining game:', error)
       }
     }
-    
+
     const createMatchmakingGame = async () => {
       try {
-        // Create new public game
         const { data: game, error: gameError } = await supabase
           .from('games')
           .insert({
@@ -88,10 +144,9 @@ export function MatchmakingModal({ isOpen, onClose, onMatchFound }: MatchmakingM
           })
           .select()
           .single()
-        
+
         if (gameError) throw gameError
-        
-        // Add creator as first player
+
         const { error: playerError } = await supabase
           .from('game_players')
           .insert({
@@ -100,56 +155,89 @@ export function MatchmakingModal({ isOpen, onClose, onMatchFound }: MatchmakingM
             empire_color: generateRandomColor(),
             placement_order: 1
           })
-        
-        if (playerError) throw playerError
-        
-        setGame(game)
-        
-        // Start checking for game start
-        checkInterval = setInterval(async () => {
-          await checkGameStatus(game.id)
-        }, 3000)
+
+        if (playerError && playerError.code !== '23505') throw playerError
+
+        const updatedGame = await gameService.getGameInfo(game.id)
+        if (!cancelled) {
+          if (updatedGame) {
+            setGame(updatedGame)
+            setMatchData(updatedGame)
+          } else {
+            setGame(game)
+            setMatchData(game)
+          }
+
+          checkInterval = setInterval(async () => {
+            const started = await checkGameStatus(game.id)
+            if (started && checkInterval) {
+              clearInterval(checkInterval)
+              checkInterval = null
+            }
+          }, 3000)
+        }
       } catch (error) {
         console.error('Error creating matchmaking game:', error)
       }
     }
-    
-    const checkGameStatus = async (gameId: string) => {
-      const { data, error } = await supabase
-        .from('games')
-        .select('*, game_players(count)')
-        .eq('id', gameId)
-        .single()
-      
-      if (error) {
-        console.error('Error checking game status:', error)
-        return
-      }
-      
-      // Auto-start if enough players
-      if (data.game_players?.[0]?.count >= 2) {
-        // Update game status
-        await supabase
+
+    const findMatch = async () => {
+      try {
+        const { data: waitingGames, error } = await supabase
           .from('games')
-          .update({
-            status: 'active',
-            started_at: new Date().toISOString()
-          })
-          .eq('id', gameId)
-        
-        setStatus('found')
-        onMatchFound(gameId)
+          .select(`
+            *,
+            game_players (
+              player_id
+            )
+          `)
+          .eq('status', 'waiting')
+          .order('created_at', { ascending: true })
+          .limit(10)
+
+        if (error) {
+          console.error('Matchmaking error:', error)
+          return
+        }
+
+        const availableGame = waitingGames?.find((game: any) => {
+          const players = Array.isArray(game.game_players) ? game.game_players : []
+          const playerCount = players.length
+          const alreadyInGame = players.some((p: any) => p.player_id === player.id)
+          return playerCount < game.max_players && !alreadyInGame
+        })
+
+        if (availableGame) {
+          clearSearchTimers()
+          await joinGame(availableGame)
+        }
+      } catch (error) {
+        console.error('Error during matchmaking search:', error)
       }
     }
-    
-    // Start matchmaking
-    setTimeout(() => {
+
+    const startSearch = () => {
       setStatus('searching')
       findMatch()
-    }, 1000)
-    
+      searchInterval = setInterval(findMatch, SEARCH_INTERVAL_MS)
+      createTimeout = setTimeout(async () => {
+        clearSearchTimers()
+        if (!cancelled) {
+          await createMatchmakingGame()
+        }
+      }, CREATE_GAME_DELAY_MS)
+    }
+
+    const startDelay = setTimeout(() => {
+      if (!cancelled) {
+        startSearch()
+      }
+    }, 500)
+
     return () => {
-      if (checkInterval) clearInterval(checkInterval)
+      cancelled = true
+      clearTimeout(startDelay)
+      cleanup()
     }
   }, [isOpen, player, setGame, onMatchFound])
   

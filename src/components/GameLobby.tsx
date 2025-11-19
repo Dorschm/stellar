@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../services/supabase'
 import { gameService } from '../services/gameService'
 import { useGameStore } from '../store/gameStore'
@@ -12,6 +12,7 @@ interface PlayerInLobby {
   username: string
   empire_color: string
   is_alive: boolean
+  is_ready: boolean
 }
 
 export function GameLobby({ onStartGame }: GameLobbyProps) {
@@ -22,20 +23,144 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
   const [isHost, setIsHost] = useState(false)
   const [isStarting, setIsStarting] = useState(false)
   const hasEnteredRef = useRef(false)
+  const hostDepartureHandledRef = useRef(false)
+  const playersRef = useRef<PlayerInLobby[]>([])
+  const hostPresenceConfirmedRef = useRef(false)
+
+  const currentHostId = players[0]?.id
+  const playerId = player?.id
+  const playerUsername = player?.username
 
   useEffect(() => {
     hasEnteredRef.current = false
   }, [currentGame?.id])
 
-  useEffect(() => {
+  const loadPlayers = useCallback(async () => {
     if (!currentGame) return
+
+    try {
+      const { data, error } = await supabase
+        .from('game_players')
+        .select(`
+          player_id,
+          empire_color,
+          is_alive,
+          placement_order,
+          players (
+            id,
+            username
+          )
+          ,
+          is_ready
+        `)
+        .eq('game_id', currentGame.id)
+        .order('placement_order', { ascending: true })
+
+      if (error) throw error
+
+      const playerList: PlayerInLobby[] = data.map((gp: any) => ({
+        id: gp.players.id,
+        username: gp.players.username,
+        empire_color: gp.empire_color,
+        is_alive: gp.is_alive,
+        is_ready: gp.is_ready ?? false
+      }))
+
+      setPlayers(playerList)
+      
+      // Check if current player is the host (first player)
+      if (playerList.length > 0 && playerList[0].id === player?.id) {
+        setIsHost(true)
+      } else {
+        setIsHost(false)
+      }
+    } catch (error) {
+      console.error('Error loading players:', error)
+      setIsHost(false)
+    }
+  }, [currentGame, player?.id])
+
+  useEffect(() => {
+    playersRef.current = players
+  }, [players])
+
+  useEffect(() => {
+    hostDepartureHandledRef.current = false
+    hostPresenceConfirmedRef.current = false
+  }, [currentGame?.id, currentHostId])
+
+  const handleHostDeparture = useCallback(async () => {
+    if (!currentGame) return
+
+    const currentPlayers = playersRef.current
+    const hostId = currentPlayers[0]?.id
+
+    if (!hostId || hostDepartureHandledRef.current) return
+
+    hostDepartureHandledRef.current = true
+
+    try {
+      const { error: removeHostError } = await supabase
+        .from('game_players')
+        .delete()
+        .eq('game_id', currentGame.id)
+        .eq('player_id', hostId)
+
+      if (removeHostError) throw removeHostError
+
+      const { data: remainingPlayers, error: remainingPlayersError } = await supabase
+        .from('game_players')
+        .select('player_id')
+        .eq('game_id', currentGame.id)
+        .order('placement_order', { ascending: true })
+
+      if (remainingPlayersError) throw remainingPlayersError
+
+      if (!remainingPlayers || remainingPlayers.length === 0) {
+        const { error: deleteGameError } = await supabase
+          .from('games')
+          .delete()
+          .eq('id', currentGame.id)
+
+        if (deleteGameError) throw deleteGameError
+
+        setPlayers([])
+        return
+      }
+
+      await Promise.all(
+        remainingPlayers.map((gp: any, index: number) =>
+          supabase
+            .from('game_players')
+            .update({ placement_order: index + 1 })
+            .eq('game_id', currentGame.id)
+            .eq('player_id', gp.player_id)
+        )
+      )
+
+      await loadPlayers()
+    } catch (error) {
+      console.error('Error handling host departure:', error)
+      hostDepartureHandledRef.current = false
+    }
+  }, [currentGame, loadPlayers])
+
+  useEffect(() => {
+    if (!currentGame || !playerId) return
 
     // Load players in the game
     loadPlayers()
 
     // Subscribe to player changes
-    const channel = supabase
-      .channel(`game_${currentGame.id}`)
+    const channel = supabase.channel(`game_${currentGame.id}`, {
+      config: {
+        presence: {
+          key: playerId
+        }
+      }
+    })
+
+    channel
       .on(
         'postgres_changes',
         {
@@ -49,6 +174,7 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
           loadPlayers()
         }
       )
+    channel
       .on(
         'postgres_changes',
         {
@@ -69,12 +195,72 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
           }
         }
       )
-      .subscribe()
+    channel
+      .on(
+        'presence',
+        { event: 'sync' },
+        () => {
+          const hostId = playersRef.current[0]?.id
+
+          if (!hostId || hostDepartureHandledRef.current) return
+
+          const state = channel.presenceState<{ player_id: string }>()
+          const activeIds = Object.values(state).flatMap(group => group.map(p => p.player_id))
+
+          if (activeIds.includes(hostId)) {
+            hostPresenceConfirmedRef.current = true
+            return
+          }
+
+          if (hostPresenceConfirmedRef.current) {
+            handleHostDeparture()
+          }
+        }
+      )
+    channel
+      .on(
+        'presence',
+        { event: 'leave' },
+        ({ leftPresences }) => {
+          const hostId = playersRef.current[0]?.id
+
+          if (!hostId || hostDepartureHandledRef.current || !hostPresenceConfirmedRef.current) return
+
+          if (leftPresences.some(p => p.player_id === hostId)) {
+            handleHostDeparture()
+          }
+        }
+      )
+
+    channel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        try {
+          await channel.track({
+            player_id: playerId,
+            username: playerUsername ?? 'unknown'
+          })
+        } catch (error) {
+          console.error('Error tracking lobby presence:', error)
+        }
+      }
+    })
 
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [currentGame, onStartGame])
+  }, [currentGame?.id, onStartGame, loadPlayers, playerId, playerUsername, handleHostDeparture])
+
+  useEffect(() => {
+    if (!currentGame) return
+
+    const interval = setInterval(() => {
+      loadPlayers()
+    }, 3000)
+
+    return () => {
+      clearInterval(interval)
+    }
+  }, [currentGame, loadPlayers])
 
   useEffect(() => {
     if (!currentGame) return
@@ -102,47 +288,18 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
     }
   }, [currentGame, onStartGame, setGame])
 
-  const loadPlayers = async () => {
-    if (!currentGame) return
 
-    try {
-      const { data, error } = await supabase
-        .from('game_players')
-        .select(`
-          player_id,
-          empire_color,
-          is_alive,
-          placement_order,
-          players (
-            id,
-            username
-          )
-        `)
-        .eq('game_id', currentGame.id)
-        .order('placement_order', { ascending: true })
 
-      if (error) throw error
-
-      const playerList: PlayerInLobby[] = data.map((gp: any) => ({
-        id: gp.players.id,
-        username: gp.players.username,
-        empire_color: gp.empire_color,
-        is_alive: gp.is_alive
-      }))
-
-      setPlayers(playerList)
-      
-      // Check if current player is the host (first player)
-      if (playerList.length > 0 && playerList[0].id === player?.id) {
-        setIsHost(true)
-      }
-    } catch (error) {
-      console.error('Error loading players:', error)
-    }
-  }
+  const currentPlayerReady = players.find(p => p.id === playerId)?.is_ready ?? false
+  const allPlayersReady = players.length > 0 && players.every(p => p.is_ready)
 
   const handleStartGame = async () => {
     if (!currentGame || !isHost || !player) return
+
+    if (!allPlayersReady) {
+      alert('All players must ready up before starting the game.')
+      return
+    }
 
     setIsStarting(true)
     try {
@@ -167,6 +324,20 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
       alert('Failed to start game: ' + (error as Error).message)
     } finally {
       setIsStarting(false)
+    }
+  }
+
+  const handleToggleReady = async () => {
+    if (!currentGame || !player) return
+
+    try {
+      await supabase
+        .from('game_players')
+        .update({ is_ready: !currentPlayerReady })
+        .eq('game_id', currentGame.id)
+        .eq('player_id', player.id)
+    } catch (error) {
+      console.error('Error toggling ready state:', error)
     }
   }
 
@@ -239,7 +410,11 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
                   </div>
                 </div>
                 
-                <div className="text-green-400 text-sm">Ready</div>
+                <div
+                  className={`text-sm font-semibold ${p.is_ready ? 'text-green-400' : 'text-red-400'}`}
+                >
+                  {p.is_ready ? 'Ready' : 'Not Ready'}
+                </div>
               </div>
             ))}
 
@@ -282,7 +457,17 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
         </div>
 
         {/* Action Buttons */}
-        <div className="flex space-x-4">
+        <div className="flex flex-col md:flex-row md:space-x-4 space-y-4 md:space-y-0">
+          <button
+            onClick={handleToggleReady}
+            className={`flex-1 px-6 py-3 rounded-lg font-semibold transition-colors ${currentPlayerReady
+              ? 'bg-red-700 hover:bg-red-600 text-white'
+              : 'bg-green-700 hover:bg-green-600 text-white'
+            }`}
+          >
+            {currentPlayerReady ? 'Unready' : 'Ready Up'}
+          </button>
+
           <button
             onClick={handleLeaveGame}
             className="flex-1 px-6 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors"
@@ -293,10 +478,10 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
           {isHost && (
             <button
               onClick={handleStartGame}
-              disabled={isStarting || players.length < 1}
+              disabled={isStarting || players.length < 1 || !allPlayersReady}
               className={`
                 flex-1 px-6 py-3 rounded-lg transition-all font-bold
-                ${isStarting || players.length < 1
+                ${isStarting || players.length < 1 || !allPlayersReady
                   ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
                   : 'bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700 text-white'
                 }
@@ -312,6 +497,12 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
             </div>
           )}
         </div>
+
+        {isHost && !allPlayersReady && (
+          <div className="mt-3 text-center text-sm text-red-400">
+            All players must be ready before launching.
+          </div>
+        )}
 
         {/* Info */}
         <div className="mt-8 text-center text-sm text-gray-500">

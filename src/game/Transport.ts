@@ -4,6 +4,8 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 import { GameEngine } from './GameEngine'
 import { useGameStore } from '../store/gameStore'
 
+type FleetType = 'scout' | 'attack' | 'defense' | 'carrier' | 'trade'
+
 export interface Intent {
   type: string
   playerId: string
@@ -28,6 +30,9 @@ export interface SystemUpdate {
 
 export interface FleetUpdate {
   id: string
+  owner_id: string
+  type: FleetType
+  size: number
   position: { x: number; y: number; z: number }
   health: number
   destination?: { x: number; y: number; z: number }
@@ -217,11 +222,67 @@ export class Transport {
       // Process intents every tick
       this.processIntents(tick)
       
+      // Automated growth every 100 ticks (similar to OpenFront)
+      if (tick % 100 === 0) {
+        this.processAutomatedGrowth()
+      }
+      
       // Send state update every 5 ticks
       if (tick % 5 === 0) {
         this.broadcastStateUpdate(tick)
       }
     })
+  }
+  
+  private processAutomatedGrowth() {
+    const store = useGameStore.getState()
+    const newFleets: any[] = []
+    
+    // Group systems by owner
+    const systemsByOwner = new Map<string, typeof store.systems>()
+    store.systems.forEach(system => {
+      if (system.owner_id) {
+        if (!systemsByOwner.has(system.owner_id)) {
+          systemsByOwner.set(system.owner_id, [])
+        }
+        systemsByOwner.get(system.owner_id)!.push(system)
+      }
+    })
+    
+    // Each player's systems generate fleets automatically
+    systemsByOwner.forEach((systems, ownerId) => {
+      const systemCount = systems.length
+      
+      // Generate fleets based on number of systems (OpenFront-style)
+      // More systems = more production
+      const fleetsToGenerate = Math.floor(systemCount / 3) // 1 fleet per 3 systems
+      
+      for (let i = 0; i < fleetsToGenerate; i++) {
+        const randomSystem = systems[Math.floor(Math.random() * systems.length)]
+        
+        newFleets.push({
+          id: this.generateFleetId(),
+          game_id: store.currentGame?.id,
+          owner_id: ownerId,
+          type: 'attack' as FleetType,
+          size: 20 + Math.floor(Math.random() * 30),
+          position: { x: randomSystem.x_pos, y: randomSystem.y_pos, z: randomSystem.z_pos },
+          destination: undefined,
+          health: 100
+        })
+      }
+    })
+    
+    if (newFleets.length > 0) {
+      store.setFleets([...store.fleets, ...newFleets])
+    }
+  }
+  
+  private generateFleetId(): string {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+      return crypto.randomUUID()
+    }
+    return Math.random().toString(36).slice(2, 10)
   }
   
   private processIntents(tick: number) {
@@ -385,6 +446,9 @@ export class Transport {
         })),
       fleets: store.fleets.map(f => ({
         id: f.id,
+        owner_id: f.owner_id,
+        type: f.type,
+        size: f.size,
         position: f.position,
         health: f.health,
         destination: f.destination

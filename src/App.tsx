@@ -4,15 +4,17 @@ import { StartScreen } from './components/StartScreen'
 import { GameLobby } from './components/GameLobby'
 import { useGameStore } from './store/gameStore'
 import { supabase } from './services/supabase'
+import type { System } from './services/supabase'
 
-type GameState = 'start' | 'lobby' | 'active' | 'completed'
+type GameState = 'start' | 'lobby' | 'active' | 'completed' | 'playing' | 'menu'
 
 function App() {
   const [gameState, setGameState] = useState<GameState>('start')
   const currentGame = useGameStore(state => state.currentGame)
-  const player = useGameStore(state => state.player)
-  const setSystems = useGameStore(state => state.setSystems)
-  const setFleets = useGameStore(state => state.setFleets)
+  const setPlayer = useGameStore(state => state.setPlayer)
+  const setGame = useGameStore(state => state.setGame)
+  const setPlanets = useGameStore(state => state.setPlanets)
+  const setAttacks = useGameStore(state => state.setAttacks)
   
   useEffect(() => {
     // Check game state when it changes
@@ -22,76 +24,48 @@ function App() {
       } else if (currentGame.status === 'active') {
         setGameState('active')
         // Initialize game world when entering active state
-        initializeGameWorld()
+        initGameWorld()
       } else if (currentGame.status === 'completed') {
         setGameState('completed')
       }
     }
   }, [currentGame])
   
-  const initializeGameWorld = async () => {
-    if (!currentGame || !player) return
-    
-    try {
-      // Load systems for this game
-      const { data: systems, error: systemsError } = await supabase
-        .from('systems')
-        .select('*')
-        .eq('game_id', currentGame.id)
+  const initGameWorld = async () => {
+    if (currentGame) {
+      // Load systems (planets) from database
+      let attempts = 0
+      let systems: System[] | null = null
       
-      if (systemsError) throw systemsError
-      
-      // If no systems exist, generate them
-      if (!systems || systems.length === 0) {
-        await generateGalaxy(currentGame.id)
-        // Reload systems after generation
-        const { data: newSystems } = await supabase
+      while (attempts < 5 && (!systems || systems.length === 0)) {
+        const { data, error } = await supabase
           .from('systems')
           .select('*')
           .eq('game_id', currentGame.id)
-        setSystems(newSystems || [])
-      } else {
-        setSystems(systems)
-      }
-      
-      // Load fleets
-      const { data: fleets, error: fleetsError } = await supabase
-        .from('fleets')
-        .select('*')
-        .eq('game_id', currentGame.id)
-      
-      if (fleetsError) throw fleetsError
-      
-      setFleets(fleets || [])
-    } catch (error) {
-      console.error('Error initializing game world:', error)
-    }
-  }
-  
-  const generateGalaxy = async (gameId: string) => {
-    const systems = []
-    const gridSize = 5
-    const spacing = 50
-    
-    for (let x = 0; x < gridSize; x++) {
-      for (let y = 0; y < gridSize; y++) {
-        for (let z = 0; z < gridSize; z++) {
-          systems.push({
-            game_id: gameId,
-            name: `System ${String.fromCharCode(65 + x)}${y}${z}`,
-            x_pos: (x - gridSize / 2) * spacing,
-            y_pos: (y - gridSize / 2) * spacing,
-            z_pos: (z - gridSize / 2) * spacing,
-            energy_generation: 100 + Math.floor(Math.random() * 100),
-            has_minerals: Math.random() > 0.7,
-            in_nebula: Math.random() > 0.9
-          })
+
+        if (error) {
+          console.error('Error loading systems:', error)
+          break
         }
+
+        if (data && data.length > 0) {
+          systems = data
+          break
+        }
+
+        attempts++
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+      
+      if (systems && systems.length > 0) {
+        setPlanets(systems) // Converts systems to planets with troops
+        setAttacks([]) // Start with no active attacks
+        setGameState('playing')
+      } else {
+        console.error('Failed to load game world after 5 attempts')
+        setGameState('menu')
       }
     }
-    
-    // Insert all systems
-    await supabase.from('systems').insert(systems)
   }
   
   // Render appropriate screen based on game state
@@ -104,6 +78,17 @@ function App() {
   }
   
   if (gameState === 'active') {
+    return (
+      <div className="w-full h-screen bg-black flex items-center justify-center text-white">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mx-auto mb-4"></div>
+          <p>Loading game world...</p>
+        </div>
+      </div>
+    )
+  }
+  
+  if (gameState === 'playing') {
     return (
       <div className="w-full h-screen bg-black">
         <Game />

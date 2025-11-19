@@ -38,6 +38,9 @@ export function Fleet({ fleet }: FleetProps) {
   const selectFleet = useGameStore(state => state.selectFleet)
   const selectedFleet = useGameStore(state => state.selectedFleet)
   const player = useGameStore(state => state.player)
+  const commandMode = useGameStore(state => state.commandMode)
+  const attackFleet = useGameStore(state => state.attackFleet)
+  const setCommandMode = useGameStore(state => state.setCommandMode)
   
   const isSelected = selectedFleet?.id === fleet.id
   const isOwned = fleet.owner_id === player?.id
@@ -97,7 +100,14 @@ export function Fleet({ fleet }: FleetProps) {
           args={[0.5, 1.5, 4]}
           onPointerOver={() => setHovered(true)}
           onPointerOut={() => setHovered(false)}
-          onClick={() => selectFleet(fleet)}
+          onClick={() => {
+            if (commandMode?.type === 'attack_fleet' && fleet.owner_id !== player?.id) {
+              attackFleet(commandMode.attackerId, fleet.id)
+              setCommandMode(null)
+            } else {
+              selectFleet(fleet)
+            }
+          }}
         >
           <meshStandardMaterial
             color={fleetColor}

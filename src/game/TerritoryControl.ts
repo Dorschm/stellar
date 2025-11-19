@@ -26,13 +26,22 @@ export class TerritoryControl {
     this.gameEngine = new GameEngine()
   }
   
-  // Calculate control percentage for victory conditions
+  // Calculate control percentage for victory conditions (sector-based)
   calculateControlPercentage(playerId: string): number {
-    const allSystems = useGameStore.getState().systems
-    const controlledSystems = allSystems.filter(s => s.owner_id === playerId)
-    return (controlledSystems.length / allSystems.length) * 100
+    const territorySectors = useGameStore.getState().territorySectors
+    if (territorySectors.length === 0) {
+      return 0
+    }
+
+    const controlledSectors = territorySectors.filter(s => s.owner_id === playerId)
+    return (controlledSectors.length / territorySectors.length) * 100
   }
-  
+
+  getSectorCount(playerId: string): number {
+    const territorySectors = useGameStore.getState().territorySectors
+    return territorySectors.filter(s => s.owner_id === playerId).length
+  }
+
   // Check if player has won by territory control
   checkVictoryCondition(playerId: string, victoryThreshold: number = 80): boolean {
     return this.calculateControlPercentage(playerId) >= victoryThreshold
