@@ -26,6 +26,7 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
   const hostDepartureHandledRef = useRef(false)
   const playersRef = useRef<PlayerInLobby[]>([])
   const hostPresenceConfirmedRef = useRef(false)
+  const heartbeatIntervalRef = useRef<number | null>(null)
 
   const currentHostId = players[0]?.id
   const playerId = player?.id
@@ -239,6 +240,29 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
             player_id: playerId,
             username: playerUsername ?? 'unknown'
           })
+          
+          // Mark player as active in database
+          await supabase
+            .from('game_players')
+            .update({ is_active: true, last_seen: new Date().toISOString() })
+            .eq('game_id', currentGame.id)
+            .eq('player_id', playerId)
+          
+          // Start heartbeat interval (update last_seen every 30 seconds)
+          if (heartbeatIntervalRef.current) {
+            clearInterval(heartbeatIntervalRef.current)
+          }
+          heartbeatIntervalRef.current = window.setInterval(async () => {
+            try {
+              await supabase
+                .from('game_players')
+                .update({ last_seen: new Date().toISOString() })
+                .eq('game_id', currentGame.id)
+                .eq('player_id', playerId)
+            } catch (error) {
+              console.error('Error updating heartbeat:', error)
+            }
+          }, 30000) // 30 seconds
         } catch (error) {
           console.error('Error tracking lobby presence:', error)
         }
@@ -246,6 +270,21 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
     })
 
     return () => {
+      // Clear heartbeat interval
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current)
+        heartbeatIntervalRef.current = null
+      }
+      
+      // Mark player as inactive in database
+      if (currentGame?.id && playerId) {
+        void supabase
+          .from('game_players')
+          .update({ is_active: false })
+          .eq('game_id', currentGame.id)
+          .eq('player_id', playerId)
+      }
+      
       supabase.removeChannel(channel)
     }
   }, [currentGame?.id, onStartGame, loadPlayers, playerId, playerUsername, handleHostDeparture])
@@ -288,7 +327,38 @@ export function GameLobby({ onStartGame }: GameLobbyProps) {
     }
   }, [currentGame, onStartGame, setGame])
 
+  // Add beforeunload handler to mark player inactive when browser closes
+  useEffect(() => {
+    if (!currentGame || !playerId) return
 
+    const handleBeforeUnload = () => {
+      // Use sendBeacon for reliable delivery when tab closes
+      // Standard async Supabase calls may be cancelled by the browser
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+      const beaconUrl = `${supabaseUrl}/functions/v1/mark-inactive`
+      const payload = JSON.stringify({ 
+        gameId: currentGame.id, 
+        playerId: playerId 
+      })
+      
+      // sendBeacon is designed for reliable delivery during page unload
+      if (navigator.sendBeacon) {
+        const blob = new Blob([payload], { type: 'application/json' })
+        navigator.sendBeacon(beaconUrl, blob)
+      }
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      // Clear heartbeat interval on unmount
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current)
+        heartbeatIntervalRef.current = null
+      }
+    }
+  }, [currentGame, playerId])
 
   const currentPlayerReady = players.find(p => p.id === playerId)?.is_ready ?? false
   const allPlayersReady = players.length > 0 && players.every(p => p.is_ready)

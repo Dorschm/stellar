@@ -17,6 +17,7 @@ A 3D space real-time strategy game inspired by OpenFront.io, built with Three.js
 - 3D combat calculations with flanking and elevation bonuses
 - Encirclement detection for instant surrender
 - Territory control through solar system capture
+- Progressive territory expansion system (OpenFront-style)
 
 ## Tech Stack
 
@@ -43,6 +44,70 @@ A 3D space real-time strategy game inspired by OpenFront.io, built with Three.js
 - **Camera**: Click and drag to orbit, scroll to zoom
 - **Selection**: Click on systems or fleets to select
 - **Build**: Select an owned system and click "Build Structure"
+
+## Territory Expansion System
+
+### Overview
+The territory expansion system mimics OpenFront's progressive tile growth, adapted for 3D space. Planets automatically expand their territory over time by creating sectors in a spherical pattern.
+
+### How It Works
+1. **Server-Side (game-tick/index.ts)**: Every 10 ticks (adjustable based on planet conditions), the server generates new sectors around owned planets
+2. **Database (territory_sectors)**: Sectors are stored with metadata (tier, wave, distance, owner)
+3. **Client Sync (Game.tsx)**: Client polls and subscribes to territory_sectors table for updates
+4. **Rendering (TerritorySector.tsx)**: Sectors are rendered as colored boxes with animations
+
+### Verification Steps
+
+#### 1. Check Server Logs
+Look for expansion messages in the game-tick function logs:
+```
+[EXPANSION] Checking planet <id> owned by <player> for <N> ticks
+[EXPANSION] Created <N> new sectors this tick
+```
+
+#### 2. Run Database Queries
+Use the queries in `database/verify_territory_expansion.sql` to check:
+- Total sectors per game
+- Recent sector additions
+- Sector distribution by tier
+- Orphaned sectors
+
+#### 3. Enable Debug Mode
+In the HUD, click the "🔍 Territory Debug" button to see:
+- Real-time sector counts
+- Expansion rates
+- Frontier planets
+- Recent expansion events
+
+#### 4. Check Browser Console
+Look for territory sync messages:
+```
+[TERRITORY] Fetched <N> sectors from database
+[TERRITORY] Syncing <N> sectors
+[TERRITORY] Stats updated
+```
+
+### Troubleshooting
+
+**No sectors appearing:**
+- Verify game-tick function is running (check for tick logs)
+- Check RLS policies on territory_sectors table
+- Ensure planets have owners (neutral planets don't expand)
+
+**Sectors not rendering:**
+- Check client sync logs in browser console
+- Verify playerColors map is populated
+- Inspect territorySectors array in gameStore
+
+**Slow expansion:**
+- Check tick rate (should be 100ms)
+- Verify expansion interval calculations (default 10 ticks)
+- Check for modifiers (nebula slows, minerals speed up)
+
+**Territory not transferring on capture:**
+- Check combat resolution logs
+- Verify territory_sectors UPDATE queries are executing
+- Run query #7 from verify_territory_expansion.sql to find mismatches
 
 ## Project Status
 

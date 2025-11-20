@@ -11,7 +11,7 @@ import { supabase } from '../services/supabase'
 import type { TerritorySector as TerritorySectorType, CombatLog } from '../services/supabase'
 import { territoryControl } from '../game/TerritoryControl'
 
-export function Game() {
+export function Game({ onGameComplete, onPlayerEliminated }: { onGameComplete?: () => void; onPlayerEliminated?: () => void }) {
   const planets = useGameStore(state => state.planets)
   const attacks = useGameStore(state => state.attacks)
   const territorySectors = useGameStore(state => state.territorySectors)
@@ -29,6 +29,7 @@ export function Game() {
   const setCombatLogs = useGameStore(state => state.setCombatLogs)
   const setRecentCombatLog = useGameStore(state => state.setRecentCombatLog)
   const setStructures = useGameStore(state => state.setStructures)
+  const territoryDebugMode = useGameStore(state => state.territoryDebugMode)
 
   const mapAttackRowToAttack = useCallback((a: any, now: number, latestTick: number) => {
     const state = useGameStore.getState()
@@ -37,27 +38,41 @@ export function Game() {
     const ticksFromNow = Math.max(0, Math.ceil((arrivalMs - now) / 100))
     const retreating = a.status === 'retreating'
 
-    let startTick = latestTick
-    let arrivalTick = latestTick + ticksFromNow
+    // Check if this attack already exists in state to avoid visual snapping
+    const existingAttack = state.attacks.find(existing => existing.id === a.id)
+    const statusChanged = existingAttack && existingAttack.retreating !== retreating
 
-    if (retreating) {
-      const sourcePlanet = planetsState.find(p => p.id === a.source_planet_id)
-      const targetPlanet = planetsState.find(p => p.id === a.target_planet_id)
+    let startTick: number
+    let arrivalTick: number
 
-      if (sourcePlanet && targetPlanet) {
-        const dx = sourcePlanet.x_pos - targetPlanet.x_pos
-        const dy = sourcePlanet.y_pos - targetPlanet.y_pos
-        const dz = sourcePlanet.z_pos - targetPlanet.z_pos
-        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz)
-        const returnTravelMs = Math.ceil(distance / 2) * 100
-        const returnTicks = Math.max(1, Math.ceil(returnTravelMs / 100))
-        arrivalTick = startTick + returnTicks
-      } else {
-        arrivalTick = startTick + Math.max(1, ticksFromNow || 10)
+    // Reuse existing tick values if attack is already tracked and status hasn't changed
+    if (existingAttack && !statusChanged) {
+      startTick = existingAttack.startTick
+      arrivalTick = existingAttack.arrivalTick
+    } else {
+      // Compute new ticks for new attacks or when status changes (e.g., in_transit -> retreating)
+      startTick = latestTick
+      arrivalTick = latestTick + ticksFromNow
+
+      if (retreating) {
+        const sourcePlanet = planetsState.find(p => p.id === a.source_planet_id)
+        const targetPlanet = planetsState.find(p => p.id === a.target_planet_id)
+
+        if (sourcePlanet && targetPlanet) {
+          const dx = sourcePlanet.x_pos - targetPlanet.x_pos
+          const dy = sourcePlanet.y_pos - targetPlanet.y_pos
+          const dz = sourcePlanet.z_pos - targetPlanet.z_pos
+          const distance = Math.sqrt(dx * dx + dy * dy + dz * dz)
+          const returnTravelMs = Math.ceil(distance / 2) * 100
+          const returnTicks = Math.max(1, Math.ceil(returnTravelMs / 100))
+          arrivalTick = startTick + returnTicks
+        } else {
+          arrivalTick = startTick + Math.max(1, ticksFromNow || 10)
+        }
       }
     }
 
-    return {
+    const attack = {
       id: a.id,
       attackerId: a.attacker_id,
       sourcePlanetId: a.source_planet_id,
@@ -67,9 +82,26 @@ export function Game() {
       arrivalTick,
       retreating
     }
+    
+    // Log attack mapping
+    const currentTick = latestTick
+    const progress = ((currentTick - startTick) / (arrivalTick - startTick) * 100).toFixed(1)
+    console.log('[ATTACK] Mapped attack:', {
+      id: attack.id,
+      status: attack.retreating ? 'retreating' : 'in_transit',
+      startTick,
+      arrivalTick,
+      progress: progress + '%',
+      reusedExisting: !!(existingAttack && !statusChanged)
+    })
+    
+    return attack
   }, [])
 
   const syncTerritoryState = useCallback((sectors: TerritorySectorType[]) => {
+    const previousCount = useGameStore.getState().territorySectors.length
+    console.log('[TERRITORY] Syncing', sectors.length, 'sectors, previous count:', previousCount)
+    
     setTerritorySectors(sectors)
 
     const state = useGameStore.getState()
@@ -93,6 +125,7 @@ export function Game() {
     })
 
     setTerritoryStats(statsMap)
+    console.log('[TERRITORY] Stats updated:', Array.from(statsMap.entries()).map(([id, s]) => ({ id, ...s })))
   }, [setTerritorySectors, setTerritoryStats])
 
   // Poll Supabase for game state updates
@@ -100,14 +133,22 @@ export function Game() {
     if (!currentGame || !player) return
 
     const pollGameState = async () => {
-      // Fetch planets
-      const { data: systemsData } = await supabase
-        .from('systems')
-        .select('*')
-        .eq('game_id', currentGame.id)
-      
-      if (systemsData) {
-        setPlanets(systemsData)
+      try {
+        // Fetch planets
+        const { data: systemsData, error: planetsError } = await supabase
+          .from('systems')
+          .select('*')
+          .eq('game_id', currentGame.id)
+        
+        if (planetsError) {
+          console.error('[CLIENT] Error fetching planets:', planetsError)
+        }
+        
+        if (systemsData) {
+          setPlanets(systemsData)
+        }
+      } catch (error) {
+        console.error('[CLIENT] Failed to fetch planets:', error)
       }
 
       // Fetch attacks
@@ -118,18 +159,34 @@ export function Game() {
         .in('status', ['in_transit', 'retreating'])
       
       if (attacksData) {
+        const previousAttackCount = useGameStore.getState().attacks.length
+        if (attacksData.length !== previousAttackCount) {
+          console.log(`[ATTACK] Attack count changed: ${previousAttackCount} -> ${attacksData.length}`)
+        }
+        
+        // Log attacks that should have arrived
+        const arrivedAttacks = attacksData.filter(a => new Date(a.arrival_at).getTime() <= Date.now())
+        if (arrivedAttacks.length > 0) {
+          console.log(`[ATTACK] ${arrivedAttacks.length} attacks should have arrived and been processed`)
+        }
+        
         const now = Date.now()
         const latestTick = useGameStore.getState().currentTick
         setAttacks(attacksData.map(a => mapAttackRowToAttack(a, now, latestTick)))
       }
 
       // Fetch territory
-      const { data: territorySectorsData } = await supabase
+      const { data: territorySectorsData, error: territorySectorsError } = await supabase
         .from('territory_sectors')
         .select('*')
         .eq('game_id', currentGame.id)
       
+      if (territorySectorsError) {
+        console.error('[TERRITORY] Error fetching sectors:', territorySectorsError)
+      }
+      
       if (territorySectorsData) {
+        console.log('[TERRITORY] Fetched', territorySectorsData.length, 'sectors from database')
         syncTerritoryState(territorySectorsData)
       }
 
@@ -141,6 +198,38 @@ export function Game() {
       if (gamePlayersData) {
         const colorMap = new Map(gamePlayersData.map(playerEntry => [playerEntry.player_id, playerEntry.empire_color]))
         setPlayerColors(colorMap)
+      }
+
+      // Check game status for completion
+      const { data: gameStatusData } = await supabase
+        .from('games')
+        .select('status, winner_id')
+        .eq('id', currentGame.id)
+        .single()
+      
+      if (gameStatusData && gameStatusData.status === 'completed') {
+        // Game is complete, trigger callback and stop polling
+        if (onGameComplete) {
+          onGameComplete()
+        }
+        return // Stop further polling in this iteration
+      }
+
+      // Check if current player is eliminated
+      if (player) {
+        const { data: playerGameStatus } = await supabase
+          .from('game_players')
+          .select('is_eliminated, is_alive')
+          .eq('game_id', currentGame.id)
+          .eq('player_id', player.id)
+          .single()
+        
+        if (playerGameStatus && playerGameStatus.is_eliminated && gameStatusData?.status === 'active') {
+          // Player is eliminated while game is still active
+          if (onPlayerEliminated) {
+            onPlayerEliminated()
+          }
+        }
       }
 
       // Fetch player resources
@@ -164,14 +253,28 @@ export function Game() {
         setStructures(structuresData)
       }
 
-      const { data: tickData } = await supabase
-        .from('game_ticks')
-        .select('tick_number')
-        .eq('game_id', currentGame.id)
-        .single()
+      try {
+        const { data: tickData, error: tickError } = await supabase
+          .from('game_ticks')
+          .select('tick_number')
+          .eq('game_id', currentGame.id)
+          .single()
 
-      if (tickData) {
-        setCurrentTick(tickData.tick_number)
+        if (tickError) {
+          console.error('[CLIENT] Error fetching tick number:', tickError)
+        }
+
+        if (tickData) {
+          const previousTick = useGameStore.getState().currentTick
+          if (tickData.tick_number !== previousTick) {
+            console.log(`[CLIENT] Tick updated: ${previousTick} -> ${tickData.tick_number}`)
+            setCurrentTick(tickData.tick_number)
+          }
+        } else {
+          console.warn('[CLIENT] No tick data found for game')
+        }
+      } catch (error) {
+        console.error('[CLIENT] Failed to fetch tick data:', error)
       }
 
       // Fetch recent combat logs (last 10)
@@ -204,23 +307,56 @@ export function Game() {
     const interval = setInterval(pollGameState, 1000)
 
     return () => clearInterval(interval)
-  }, [currentGame, player, setPlanets, setAttacks, setPlayer, setCurrentTick, syncTerritoryState, setPlayerColors, setCombatLogs, setRecentCombatLog, setStructures, mapAttackRowToAttack])
+  }, [currentGame, player, setPlanets, setAttacks, setPlayer, setCurrentTick, syncTerritoryState, setPlayerColors, setCombatLogs, setRecentCombatLog, setStructures, mapAttackRowToAttack, onGameComplete])
 
   // Trigger server-side game tick via Edge Function
   useEffect(() => {
     if (!currentGame) return
 
+    let tickCount = 0
     const triggerGameTick = async () => {
       try {
-        const { error } = await supabase.functions.invoke('game-tick', {
+        tickCount++
+        
+        // Log every 10th tick to confirm triggers are working
+        if (tickCount % 10 === 0) {
+          console.log(`[CLIENT] Triggering game tick #${tickCount} for game ${currentGame.id}`)
+        }
+        
+        // Check if game is still active before triggering tick
+        const { data: gameStatus, error: statusError } = await supabase
+          .from('games')
+          .select('status')
+          .eq('id', currentGame.id)
+          .single()
+        
+        if (statusError) {
+          console.error('[CLIENT] Error checking game status:', statusError)
+          return
+        }
+        
+        if (!gameStatus || gameStatus.status !== 'active') {
+          if (gameStatus?.status) {
+            console.warn(`[CLIENT] Game status is '${gameStatus.status}', not triggering tick`)
+          }
+          return // Don't trigger tick if game isn't active
+        }
+
+        const { data, error } = await supabase.functions.invoke('game-tick', {
           body: { gameId: currentGame.id }
         })
         
         if (error) {
-          console.error('Error triggering game tick:', error)
+          console.error('[CLIENT] Error triggering game tick:', error)
+          console.error('[CLIENT] Full error response:', JSON.stringify(error))
+        } else if (data) {
+          // Log successful tick responses occasionally
+          if (tickCount % 10 === 0) {
+            console.log('[CLIENT] Tick response:', data)
+          }
         }
       } catch (error) {
-        console.error('Failed to trigger game tick:', error)
+        console.error('[CLIENT] Failed to trigger game tick:', error)
       }
     }
 
@@ -229,6 +365,108 @@ export function Game() {
 
     return () => clearInterval(interval)
   }, [currentGame])
+
+  // Add presence tracking for active game
+  useEffect(() => {
+    if (!currentGame || !player) return
+
+    const presenceChannel = supabase.channel(`game-presence:${currentGame.id}`, {
+      config: {
+        presence: {
+          key: player.id
+        }
+      }
+    })
+
+    let heartbeatInterval: number | null = null
+
+    presenceChannel
+      .on('presence', { event: 'sync' }, () => {
+        const state = presenceChannel.presenceState<{ player_id: string; username: string }>()
+        const activePlayerIds = Object.values(state).flatMap(group => group.map(p => p.player_id))
+        console.log('[GAME PRESENCE] Active players:', activePlayerIds.length)
+      })
+      .on('presence', { event: 'leave' }, ({ leftPresences }) => {
+        const leftPlayerIds = leftPresences.map((p: any) => p.player_id)
+        console.log('[GAME PRESENCE] Players left:', leftPlayerIds)
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          try {
+            await presenceChannel.track({
+              player_id: player.id,
+              username: player.username
+            })
+
+            // Mark player as active in database
+            await supabase
+              .from('game_players')
+              .update({ is_active: true, last_seen: new Date().toISOString() })
+              .eq('game_id', currentGame.id)
+              .eq('player_id', player.id)
+
+            // Start heartbeat interval (update last_seen every 30 seconds)
+            heartbeatInterval = window.setInterval(async () => {
+              try {
+                await supabase
+                  .from('game_players')
+                  .update({ last_seen: new Date().toISOString() })
+                  .eq('game_id', currentGame.id)
+                  .eq('player_id', player.id)
+              } catch (error) {
+                console.error('[GAME PRESENCE] Error updating heartbeat:', error)
+              }
+            }, 30000) // 30 seconds
+          } catch (error) {
+            console.error('[GAME PRESENCE] Error tracking presence:', error)
+          }
+        }
+      })
+
+    return () => {
+      // Clear heartbeat interval
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval)
+      }
+
+      // Mark player as inactive in database
+      void supabase
+        .from('game_players')
+        .update({ is_active: false })
+        .eq('game_id', currentGame.id)
+        .eq('player_id', player.id)
+
+      supabase.removeChannel(presenceChannel)
+    }
+  }, [currentGame, player])
+
+  // Add beforeunload handler to mark player inactive when browser closes
+  useEffect(() => {
+    if (!currentGame || !player) return
+
+    const handleBeforeUnload = () => {
+      // Use sendBeacon for reliable delivery when tab closes
+      // Standard async Supabase calls may be cancelled by the browser
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+      const beaconUrl = `${supabaseUrl}/functions/v1/mark-inactive`
+      const payload = JSON.stringify({ 
+        gameId: currentGame.id, 
+        playerId: player.id 
+      })
+      
+      // sendBeacon is designed for reliable delivery during page unload
+      if (navigator.sendBeacon) {
+        const blob = new Blob([payload], { type: 'application/json' })
+        navigator.sendBeacon(beaconUrl, blob)
+      }
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [currentGame, player])
 
   // Subscribe to real-time updates for immediate changes
   useEffect(() => {
@@ -264,6 +502,7 @@ export function Game() {
         },
         () => {
           // Re-fetch attacks on any change
+          console.log('[ATTACK] Received planet_attacks update via subscription, fetching latest attacks')
           supabase
             .from('planet_attacks')
             .select('*')
@@ -287,13 +526,21 @@ export function Game() {
           filter: `game_id=eq.${currentGame.id}`
         },
         () => {
+          console.log('[CLIENT] Received game_ticks update via subscription')
           supabase
             .from('game_ticks')
             .select('tick_number')
             .eq('game_id', currentGame.id)
             .single()
-            .then(({ data }) => {
-              if (data) setCurrentTick(data.tick_number)
+            .then(({ data, error }) => {
+              if (error) {
+                console.error('[CLIENT] Error in subscription fetch:', error)
+              }
+              if (data) {
+                const previousTick = useGameStore.getState().currentTick
+                console.log(`[CLIENT] Subscription tick update: ${previousTick} -> ${data.tick_number}`)
+                setCurrentTick(data.tick_number)
+              }
             })
         }
       )
@@ -306,6 +553,7 @@ export function Game() {
           filter: `game_id=eq.${currentGame.id}`
         },
         () => {
+          console.log('[TERRITORY] Received territory_sectors update via subscription')
           supabase
             .from('territory_sectors')
             .select('*')
@@ -402,6 +650,7 @@ export function Game() {
             key={`${sector.x_pos}-${sector.y_pos}-${sector.z_pos}`}
             sector={sector}
             playerColors={playerColors}
+            debug={territoryDebugMode}
           />
         ))}
         

@@ -42,9 +42,23 @@ export class TerritoryControl {
     return territorySectors.filter(s => s.owner_id === playerId).length
   }
 
-  // Check if player has won by territory control
+  // Check if player has won by territory control (read-only, actual victory is server-side)
   checkVictoryCondition(playerId: string, victoryThreshold: number = 80): boolean {
-    return this.calculateControlPercentage(playerId) >= victoryThreshold
+    const territoryPercentage = this.calculateControlPercentage(playerId)
+    const planetPercentage = this.getPlanetControlPercentage(playerId)
+    
+    return territoryPercentage >= victoryThreshold || planetPercentage >= victoryThreshold
+  }
+  
+  // Calculate planet control percentage for victory conditions
+  getPlanetControlPercentage(playerId: string): number {
+    const systems = useGameStore.getState().systems
+    if (systems.length === 0) {
+      return 0
+    }
+    
+    const controlledPlanets = systems.filter(s => s.owner_id === playerId)
+    return (controlledPlanets.length / systems.length) * 100
   }
   
   // Get connected territories (for bonuses and strategic advantages)
@@ -273,9 +287,10 @@ export class TerritoryControl {
     // Check for territory bonuses
     this.updateTerritoryBonuses(newOwnerId)
     
-    // Check victory condition
+    // Note: Victory checking is now handled server-side in game-tick function
+    // Client-side check is informational only
     if (this.checkVictoryCondition(newOwnerId)) {
-      this.triggerVictory(newOwnerId)
+      console.log(`Player ${newOwnerId} has reached victory threshold (client-side check)`)      // Server will detect and complete the game
     }
     
     return update
@@ -305,11 +320,6 @@ export class TerritoryControl {
     })
   }
   
-  private triggerVictory(playerId: string) {
-    console.log(`Player ${playerId} has achieved victory!`)
-    // TODO: Implement victory screen and game end logic
-  }
-  
   // Get influence map for AI decision making
   getInfluenceMap(): Map<string, number> {
     const systems = useGameStore.getState().systems
@@ -336,6 +346,184 @@ export class TerritoryControl {
     }
     
     return influenceMap
+  }
+  
+  // Calculate expansion tier for a planet based on ownership duration
+  calculateExpansionTier(planetId: string): { tier: number; ownershipDuration: number; nextTierIn: number } {
+    const territorySectors = useGameStore.getState().territorySectors
+    const planetSectors = territorySectors.filter(s => s.controlled_by_planet_id === planetId)
+    
+    if (planetSectors.length === 0) {
+      return { tier: 1, ownershipDuration: 0, nextTierIn: 50 }
+    }
+    
+    // Find oldest sector to determine ownership duration
+    let oldestCaptureMs = Infinity
+    for (const sector of planetSectors) {
+      const capturedAtMs = new Date(sector.captured_at).getTime()
+      if (!Number.isNaN(capturedAtMs)) {
+        oldestCaptureMs = Math.min(oldestCaptureMs, capturedAtMs)
+      }
+    }
+    
+    const nowMs = Date.now()
+    const ownershipDurationMs = nowMs - oldestCaptureMs
+    const ownershipDurationTicks = Math.floor(ownershipDurationMs / 100) // 100ms per tick
+    
+    // Determine tier based on duration
+    let tier = 1
+    let nextTierIn = 50 - ownershipDurationTicks
+    
+    if (ownershipDurationTicks > 150) {
+      tier = 3
+      nextTierIn = 0 // Max tier
+    } else if (ownershipDurationTicks > 50) {
+      tier = 2
+      nextTierIn = 150 - ownershipDurationTicks
+    }
+    
+    return {
+      tier,
+      ownershipDuration: ownershipDurationTicks,
+      nextTierIn: Math.max(0, nextTierIn)
+    }
+  }
+  
+  // Calculate expansion rate (sectors per minute) for a player
+  calculateExpansionRate(playerId: string): number {
+    const territorySectors = useGameStore.getState().territorySectors
+    const playerSectors = territorySectors.filter(s => s.owner_id === playerId)
+    
+    // Count sectors added in last 60 seconds
+    const sixtySecondsAgo = Date.now() - 60000
+    const recentSectors = playerSectors.filter(s => {
+      const capturedAt = new Date(s.captured_at).getTime()
+      return capturedAt >= sixtySecondsAgo
+    })
+    
+    // Return sectors per minute
+    return recentSectors.length
+  }
+  
+  // Get frontier planets (actively expanding planets)
+  getFrontierPlanets(playerId: string): System[] {
+    const systems = useGameStore.getState().systems
+    const territorySectors = useGameStore.getState().territorySectors
+    const ownedPlanets = systems.filter(s => s.owner_id === playerId)
+    const frontierPlanets: System[] = []
+    
+    for (const planet of ownedPlanets) {
+      const planetSectors = territorySectors.filter(s => s.controlled_by_planet_id === planet.id)
+      
+      // Check if planet has sectors captured in last 30 seconds
+      const thirtySecondsAgo = Date.now() - 30000
+      const hasRecentExpansion = planetSectors.some(s => {
+        const capturedAt = new Date(s.captured_at).getTime()
+        return capturedAt >= thirtySecondsAgo
+      })
+      
+      if (hasRecentExpansion) {
+        frontierPlanets.push(planet)
+        continue
+      }
+      
+      // Check if planet is near enemy/neutral territory
+      const isNearBorder = systems.some(other => {
+        if (other.id === planet.id || other.owner_id === playerId) return false
+        
+        const distance = this.gameEngine.calculateDistance(
+          { x: planet.x_pos, y: planet.y_pos, z: planet.z_pos },
+          { x: other.x_pos, y: other.y_pos, z: other.z_pos }
+        )
+        
+        return distance <= 100
+      })
+      
+      if (isNearBorder) {
+        frontierPlanets.push(planet)
+      }
+    }
+    
+    return frontierPlanets
+  }
+  
+  // Get edge sectors for a planet (frontier expansion zones)
+  getEdgeSectors(planetId: string) {
+    const territorySectors = useGameStore.getState().territorySectors
+    const planetSectors = territorySectors.filter(s => s.controlled_by_planet_id === planetId)
+    
+    if (planetSectors.length === 0) return []
+    
+    // Find maximum wave number
+    const maxWave = planetSectors.reduce((max, s) => Math.max(max, s.expansion_wave || 0), 0)
+    
+    // Return sectors at the frontier (highest wave number)
+    return planetSectors.filter(s => (s.expansion_wave || 0) === maxWave)
+  }
+
+  // Validate territory integrity
+  validateTerritoryIntegrity(): { valid: boolean; issues: string[] } {
+    const sectors = useGameStore.getState().territorySectors
+    const systems = useGameStore.getState().systems
+    const issues: string[] = []
+    
+    // Check for orphaned sectors
+    const orphaned = sectors.filter(s => !systems.find(sys => sys.id === s.controlled_by_planet_id))
+    if (orphaned.length > 0) issues.push(`${orphaned.length} orphaned sectors`)
+    
+    // Check for duplicate positions
+    const positions = new Set()
+    sectors.forEach(s => {
+      const key = `${s.x_pos},${s.y_pos},${s.z_pos}`
+      if (positions.has(key)) issues.push(`Duplicate sector at ${key}`)
+      positions.add(key)
+    })
+    
+    return { valid: issues.length === 0, issues }
+  }
+
+  // Get expansion health metrics
+  getExpansionHealth(playerId: string): { healthy: boolean; metrics: any } {
+    const rate = this.calculateExpansionRate(playerId)
+    const frontiers = this.getFrontierPlanets(playerId)
+    const sectors = useGameStore.getState().territorySectors.filter(s => s.owner_id === playerId)
+    
+    const recentSectors = sectors.filter(s => {
+      const age = Date.now() - new Date(s.captured_at).getTime()
+      return age < 60000 // Last 60 seconds
+    })
+    
+    return {
+      healthy: recentSectors.length > 0 && frontiers.length > 0,
+      metrics: {
+        expansionRate: rate,
+        frontierPlanets: frontiers.length,
+        recentSectors: recentSectors.length,
+        totalSectors: sectors.length
+      }
+    }
+  }
+
+  // Debug territory state
+  debugTerritory(playerId: string): any {
+    const sectors = useGameStore.getState().territorySectors.filter(s => s.owner_id === playerId)
+    const tierCounts: Record<number, number> = { 1: 0, 2: 0, 3: 0 }
+    sectors.forEach(s => {
+      const tier = s.expansion_tier || 1
+      tierCounts[tier] = (tierCounts[tier] || 0) + 1
+    })
+    
+    const ages = sectors.map(s => Date.now() - new Date(s.captured_at).getTime())
+    
+    return {
+      totalSectors: sectors.length,
+      tierDistribution: tierCounts,
+      oldestSectorAge: ages.length > 0 ? Math.max(...ages) : 0,
+      newestSectorAge: ages.length > 0 ? Math.min(...ages) : 0,
+      averageDistance: sectors.length > 0 
+        ? sectors.reduce((sum, s) => sum + (s.distance_from_planet || 0), 0) / sectors.length 
+        : 0
+    }
   }
 }
 

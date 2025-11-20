@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useGameStore } from '../store/gameStore'
 import type { CombatLog } from '../services/supabase'
 import { BuildMenu } from './BuildMenu'
+import { territoryControl } from '../game/TerritoryControl'
 
 export function HUD() {
   const resources = useGameStore(state => state.resources)
@@ -11,18 +12,60 @@ export function HUD() {
   const setCommandMode = useGameStore(state => state.setCommandMode)
   const planets = useGameStore(state => state.planets)
   const attacks = useGameStore(state => state.attacks)
-  const currentTick = useGameStore(state => state.currentTick)
   const territoryStats = useGameStore(state => state.territoryStats)
+  const territorySectors = useGameStore(state => state.territorySectors)
   const combatLogs = useGameStore(state => state.combatLogs)
   const recentCombatLog = useGameStore(state => state.recentCombatLog)
   const structures = useGameStore(state => state.structures)
+  const territoryDebugMode = useGameStore(state => state.territoryDebugMode)
+  const setTerritoryDebugMode = useGameStore(state => state.setTerritoryDebugMode)
   
   const [isBuildMenuOpen, setIsBuildMenuOpen] = useState(false)
   const [buildTargetSystemId, setBuildTargetSystemId] = useState<string | undefined>(undefined)
+  const [newSectorCount, setNewSectorCount] = useState(0)
+  const [showExpansionNotification, setShowExpansionNotification] = useState(false)
+  const [recentExpansions, setRecentExpansions] = useState<Array<{timestamp: number, count: number}>>([])
 
   const playerTerritoryPercentage = player?.id
     ? territoryStats.get(player.id)?.percentage ?? 0
     : 0
+  
+  // Track new sector expansion for notifications
+  const [prevSectorCount, setPrevSectorCount] = useState<number | null>(null)
+  
+  // Initialize prevSectorCount when player first loads
+  useEffect(() => {
+    if (player?.id && prevSectorCount === null) {
+      const currentSectorCount = territorySectors.filter(s => s.owner_id === player.id).length
+      setPrevSectorCount(currentSectorCount)
+    }
+  }, [player?.id, prevSectorCount])
+  
+  // Detect sector expansion and show notification
+  useEffect(() => {
+    if (!player?.id) return
+    if (prevSectorCount === null) return // Skip on initial run
+    
+    const currentSectorCount = territorySectors.filter(s => s.owner_id === player.id).length
+    if (currentSectorCount > prevSectorCount) {
+      const newSectors = currentSectorCount - prevSectorCount
+      setNewSectorCount(newSectors)
+      setShowExpansionNotification(true)
+      
+      // Track expansion event for debug panel
+      setRecentExpansions(prev => [
+        { timestamp: Date.now(), count: newSectors },
+        ...prev.slice(0, 4) // Keep last 5 events
+      ])
+      
+      // Update baseline for next comparison
+      setPrevSectorCount(currentSectorCount)
+      
+      setTimeout(() => {
+        setShowExpansionNotification(false)
+      }, 2000)
+    }
+  }, [territorySectors, player?.id, prevSectorCount])
   
   return (
     <>
@@ -95,6 +138,47 @@ export function HUD() {
               ) : null
             })()}
             
+            {/* Expansion Tier Display */}
+            {selectedPlanet.owner_id === player?.id && (() => {
+              const tierInfo = territoryControl.calculateExpansionTier(selectedPlanet.id)
+              const tierColors = {
+                1: 'text-yellow-400',
+                2: 'text-blue-400',
+                3: 'text-purple-400'
+              }
+              const tierNames = {
+                1: 'Bronze',
+                2: 'Silver',
+                3: 'Gold'
+              }
+              
+              return (
+                <div className="mt-3 pt-3 border-t border-gray-700">
+                  <div className="text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Expansion Tier:</span>
+                      <span className={tierColors[tierInfo.tier as 1 | 2 | 3]}>
+                        {tierNames[tierInfo.tier as 1 | 2 | 3]} (Tier {tierInfo.tier})
+                      </span>
+                    </div>
+                    {tierInfo.tier < 3 && (
+                      <div className="mt-1">
+                        <div className="text-gray-500 text-xs">Next tier in {tierInfo.nextTierIn} ticks</div>
+                        <div className="w-full bg-gray-700 rounded-full h-1.5 mt-1">
+                          <div 
+                            className={`h-1.5 rounded-full transition-all ${tierColors[tierInfo.tier as 1 | 2 | 3]}`}
+                            style={{ 
+                              width: `${tierInfo.tier === 1 ? (tierInfo.ownershipDuration / 50) * 100 : ((tierInfo.ownershipDuration - 50) / 100) * 100}%` 
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
+            
             {/* Action Buttons (OpenFront style) */}
             <div className="mt-4 space-y-2 pointer-events-auto">
               {selectedPlanet.owner_id === player?.id && selectedPlanet.troops > 1 && (
@@ -138,6 +222,14 @@ export function HUD() {
           <li>• Capture enemy planets!</li>
         </ul>
       </div>
+      
+      {/* Territory Debug Toggle Button */}
+      <button 
+        onClick={() => setTerritoryDebugMode(!territoryDebugMode)} 
+        className="absolute top-20 right-4 px-2 py-1 bg-gray-800 text-white text-xs rounded pointer-events-auto hover:bg-gray-700 transition-colors"
+      >
+        🔍 Territory Debug
+      </button>
 
       <div className="absolute right-4 bottom-4 p-4 w-64 bg-black/60 backdrop-blur rounded-lg text-white text-sm pointer-events-none">
         <h4 className="font-bold mb-2">Territory Control</h4>
@@ -153,7 +245,122 @@ export function HUD() {
               </div>
             ))}
         </div>
+        
+        {/* Territory Expansion Stats */}
+        {player?.id && (() => {
+          const expansionRate = territoryControl.calculateExpansionRate(player.id)
+          const frontierPlanets = territoryControl.getFrontierPlanets(player.id)
+          const sectorCount = territoryControl.getSectorCount(player.id)
+          
+          return (
+            <div className="mt-3 pt-3 border-t border-gray-600">
+              <div className="text-xs text-gray-400 space-y-1">
+                <div className="flex justify-between">
+                  <span>Sectors:</span>
+                  <span className="text-cyan-300">{sectorCount}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Expansion Rate:</span>
+                  <span className="text-green-300">+{expansionRate}/min</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Frontier Planets:</span>
+                  <span className="text-yellow-300">{frontierPlanets.length}</span>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
       </div>
+      
+      {/* Territory Debug Panel */}
+      {territoryDebugMode && player?.id && (
+        <div className="absolute top-32 right-4 p-4 w-80 bg-black/80 backdrop-blur rounded-lg text-white text-sm pointer-events-auto border border-cyan-500">
+          <h4 className="font-bold mb-3 text-cyan-400">Territory Expansion Monitor</h4>
+          
+          {/* Total Sectors */}
+          <div className="mb-3">
+            <div className="text-xs text-gray-400 mb-1">Total Sectors in Game</div>
+            <div className="text-2xl font-bold text-cyan-300">{territorySectors.length}</div>
+          </div>
+          
+          {/* Sectors per Player */}
+          <div className="mb-3">
+            <div className="text-xs text-gray-400 mb-1">Distribution by Player</div>
+            <div className="space-y-1">
+              {Array.from(
+                territorySectors.reduce((acc, s) => {
+                  if (s.owner_id) {
+                    acc.set(s.owner_id, (acc.get(s.owner_id) || 0) + 1)
+                  }
+                  return acc
+                }, new Map<string, number>())
+              )
+              .sort((a, b) => b[1] - a[1])
+              .map(([ownerId, count]) => {
+                const percentage = (count / territorySectors.length * 100).toFixed(1)
+                return (
+                  <div key={ownerId} className="flex justify-between text-xs">
+                    <span className={ownerId === player.id ? 'text-green-400' : 'text-gray-300'}>
+                      {ownerId === player.id ? 'You' : ownerId.slice(0, 8)}
+                    </span>
+                    <span className="text-cyan-300">{count} ({percentage}%)</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+          
+          {/* Your Expansion Stats */}
+          <div className="mb-3 pt-3 border-t border-gray-600">
+            <div className="text-xs text-gray-400 mb-1">Your Expansion Stats</div>
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between">
+                <span>Expansion Rate:</span>
+                <span className="text-green-400">+{territoryControl.calculateExpansionRate(player.id)}/min</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Frontier Planets:</span>
+                <span className="text-yellow-400">{territoryControl.getFrontierPlanets(player.id).length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Your Sectors:</span>
+                <span className="text-cyan-400">{territoryControl.getSectorCount(player.id)}</span>
+              </div>
+            </div>
+          </div>
+          
+          {/* Recent Expansion Events */}
+          {recentExpansions.length > 0 && (
+            <div className="pt-3 border-t border-gray-600">
+              <div className="text-xs text-gray-400 mb-1">Recent Expansions (Last 5)</div>
+              <div className="space-y-1">
+                {recentExpansions.map((event, idx) => {
+                  const secondsAgo = Math.floor((Date.now() - event.timestamp) / 1000)
+                  return (
+                    <div key={idx} className="flex justify-between text-xs">
+                      <span className="text-gray-300">{secondsAgo}s ago</span>
+                      <span className="text-green-400">+{event.count} sectors</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          
+          <div className="mt-3 pt-3 border-t border-gray-600 text-xs text-gray-500">
+            Check browser console for [EXPANSION] and [TERRITORY] logs
+          </div>
+        </div>
+      )}
+      
+      {/* Territory Expansion Notification */}
+      {showExpansionNotification && (
+        <div className="absolute top-24 right-4 p-3 bg-green-900/90 backdrop-blur rounded-lg text-white text-sm animate-bounce pointer-events-none border-2 border-green-400">
+          <div className="font-bold">🌟 Territory Expanded</div>
+          <div className="text-xs text-gray-300">+{newSectorCount} sectors captured</div>
+        </div>
+      )}
       
       {/* Combat Log Panel */}
       {combatLogs.length > 0 && (

@@ -19,10 +19,22 @@ export interface ResourceCost {
   minerals?: number
 }
 
+export interface StructureCost {
+  credits: number
+  minerals: number
+  energy: number
+}
+
+export type StructureCostKey = 
+  | 'BUILD_STRUCTURE_TRADE'
+  | 'BUILD_STRUCTURE_MINING'
+  | 'BUILD_STRUCTURE_COLONY'
+  | 'BUILD_STRUCTURE_DEFENSE'
+  | 'BUILD_STRUCTURE_MISSILE'
+  | 'BUILD_STRUCTURE_POINT_DEFENSE'
+
 export class ResourceSystem {
   private baseEnergyGeneration = 100
-  private baseCreditGeneration = 100
-  private baseMineralGeneration = 50
   private baseResearchGeneration = 1
   
   // Maximum resource caps
@@ -288,25 +300,6 @@ export class ResourceSystem {
     return { troopCapBonus, defenseMultiplier, tradeIncomeBonus }
   }
   
-  // Resource events and bonuses
-  private checkResourceEvents(resources: ResourceGeneration) {
-    // Energy crisis
-    if (resources.energy < 1000) {
-      console.log('Energy crisis! Build more energy generators')
-    }
-    
-    // Credit surplus
-    if (resources.credits > 50000) {
-      console.log('Credit surplus! Consider investing in fleet or structures')
-    }
-    
-    // Research milestone
-    if (resources.research >= 10 && resources.research % 10 === 0) {
-      console.log('Research milestone reached!')
-      // TODO: Unlock new technologies
-    }
-  }
-  
   /**
    * Get resource generation breakdown for UI (client-only helper)
    * Uses the game store directly - for client UI only
@@ -360,17 +353,17 @@ export class ResourceSystem {
     BUILD_FLEET_DEFENSE: { credits: 3000, minerals: 300, energy: 1500 },
     BUILD_FLEET_CARRIER: { credits: 10000, minerals: 1000, energy: 5000 },
     BUILD_FLEET_TRADE: { credits: 2000, minerals: 200, energy: 1000 },
-    BUILD_STRUCTURE_TRADE: { credits: 50000, minerals: 500, energy: 1000 },
-    BUILD_STRUCTURE_MINING: { credits: 50000, minerals: 200, energy: 500 },
-    BUILD_STRUCTURE_COLONY: { credits: 100000, minerals: 1000, energy: 2000 },
-    BUILD_STRUCTURE_DEFENSE: { credits: 25000, minerals: 500, energy: 500 },
-    BUILD_STRUCTURE_MISSILE: { credits: 75000, minerals: 1000, energy: 1000 },
-    BUILD_STRUCTURE_POINT_DEFENSE: { credits: 50000, minerals: 750, energy: 750 },
+    BUILD_STRUCTURE_TRADE: { credits: 50000, minerals: 500, energy: 1000 } as StructureCost,
+    BUILD_STRUCTURE_MINING: { credits: 50000, minerals: 200, energy: 500 } as StructureCost,
+    BUILD_STRUCTURE_COLONY: { credits: 100000, minerals: 1000, energy: 2000 } as StructureCost,
+    BUILD_STRUCTURE_DEFENSE: { credits: 25000, minerals: 500, energy: 500 } as StructureCost,
+    BUILD_STRUCTURE_MISSILE: { credits: 75000, minerals: 1000, energy: 1000 } as StructureCost,
+    BUILD_STRUCTURE_POINT_DEFENSE: { credits: 50000, minerals: 750, energy: 750 } as StructureCost,
     RESEARCH_TECH: { research: 10 },
     LAUNCH_ANTIMATTER: { credits: 100000, minerals: 5000, energy: 10000 },
     LAUNCH_NOVA_BOMB: { credits: 200000, minerals: 10000, energy: 20000 },
     LAUNCH_SWARM: { credits: 150000, minerals: 7500, energy: 15000 }
-  }
+  } as const
 }
 
 // Export singleton instance

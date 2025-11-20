@@ -1,7 +1,7 @@
 import { create } from 'zustand'
-import type { System, Player, Game, TerritorySector, CombatLog, Structure } from '../services/supabase'
+import type { System, Player, Game, TerritorySector, CombatLog, Structure, GameStats, GamePlayer } from '../services/supabase'
 import { supabase } from '../services/supabase'
-import { ResourceSystem } from '../game/ResourceSystem'
+import { ResourceSystem, type StructureCostKey } from '../game/ResourceSystem'
 
 // Read-only game state - all logic happens server-side in Supabase
 // Client just displays the current state from the database
@@ -43,11 +43,14 @@ interface GameState {
   // Read-only game state from Supabase
   currentGame: Game | null
   player: Player | null
+  playerGameData: GamePlayer | null
   systems: System[]
   planets: Planet[]
   attacks: Attack[]
   territorySectors: TerritorySector[]
   structures: Structure[]
+  gameStats: GameStats[]
+  winnerPlayer: Player | null
   playerColors: Map<string, string>
   territoryStats: Map<string, { sectorCount: number; percentage: number }>
   resources: Resources
@@ -60,14 +63,20 @@ interface GameState {
   selectedPlanet: Planet | null
   selectedAttack: Attack | null
   commandMode: CommandMode
+  territoryDebugMode: boolean
   
   // Setters for syncing with Supabase
   setGame: (game: Game) => void
   setPlayer: (player: Player) => void
+  setPlayerGameData: (data: GamePlayer) => void
+  setSystems: (systems: System[]) => void
   setPlanets: (systems: System[]) => void
   setAttacks: (attacks: Attack[]) => void
   setTerritorySectors: (sectors: TerritorySector[]) => void
   setStructures: (structures: Structure[]) => void
+  setGameStats: (stats: GameStats[]) => void
+  setWinnerPlayer: (player: Player | null) => void
+  fetchGameStats: (gameId: string) => Promise<void>
   setPlayerColors: (colors: Map<string, string>) => void
   setTerritoryStats: (stats: Map<string, { sectorCount: number; percentage: number }>) => void
   updateResources: (resources: Partial<Resources>) => void
@@ -83,9 +92,13 @@ interface GameState {
   selectAttack: (attack: Attack | null) => void
   setCameraPosition: (position: { x: number; y: number; z: number }) => void
   setCommandMode: (mode: CommandMode) => void
+  setTerritoryDebugMode: (enabled: boolean) => void
   
   // Server action requests (send to Supabase)
   requestSendTroops: (sourcePlanetId: string, targetPlanetId: string, troopCount: number) => Promise<void>
+  
+  // Reset all game state
+  resetGameState: () => void
 }
 
 // Convert System to Planet with troop data
@@ -100,22 +113,25 @@ const systemToPlanet = (system: System): Planet => ({
   troopGenRate: 5 // 5 troops per tick
 })
 
-export const useGameStore = create<GameState>((set, get) => ({
-  // Read-only state from Supabase
+export const useGameStore = create<GameState>()((set, get) => ({
+  // Initial state from Supabase
   currentGame: null,
   player: null,
+  playerGameData: null,
   systems: [],
   planets: [],
   attacks: [],
   territorySectors: [],
   structures: [],
+  gameStats: [],
+  winnerPlayer: null,
   playerColors: new Map(),
   territoryStats: new Map(),
   resources: {
     gold: BigInt(0),
     energy: 0,
     minerals: 0,
-    research: 0
+    research: 0,
   },
   currentTick: 0,
   combatLogs: [],
@@ -124,6 +140,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   selectedPlanet: null,
   selectedAttack: null,
   commandMode: null,
+  territoryDebugMode: false,
   
   // Setters for syncing with Supabase
   setGame: (game) => set({ currentGame: game }),
@@ -136,6 +153,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       research: player.research_points || 0
     } : state.resources
   })),
+  setSystems: (systems) => set({ systems }),
   setPlanets: (systems) => set((state) => {
     const nextPlanets = systems.map(systemToPlanet)
     const nextSelected = state.selectedPlanet
@@ -146,12 +164,57 @@ export const useGameStore = create<GameState>((set, get) => ({
   setAttacks: (attacks) => set({ attacks }),
   setTerritorySectors: (sectors) => set({ territorySectors: sectors }),
   setStructures: (structures) => set({ structures }),
+  setGameStats: (stats) => set({ gameStats: stats }),
+  setWinnerPlayer: (player) => set({ winnerPlayer: player }),
+  fetchGameStats: async (gameId) => {
+    try {
+      // Fetch game stats for all players
+      const { data: statsData, error: statsError } = await supabase
+        .from('game_stats')
+        .select('*')
+        .eq('game_id', gameId)
+      
+      if (statsError) throw statsError
+      
+      // Fetch game winner info
+      const { data: gameData, error: gameError } = await supabase
+        .from('games')
+        .select('winner_id, victory_type, game_duration_seconds')
+        .eq('id', gameId)
+        .single()
+      
+      if (gameError) throw gameError
+      
+      // Fetch winner player if exists
+      let winnerData = null
+      if (gameData?.winner_id) {
+        const { data: winner, error: winnerError } = await supabase
+          .from('players')
+          .select('*')
+          .eq('id', gameData.winner_id)
+          .single()
+        
+        if (!winnerError) winnerData = winner
+      }
+      
+      set({ gameStats: statsData || [], winnerPlayer: winnerData })
+    } catch (error) {
+      console.error('Error fetching game stats:', error)
+    }
+  },
   setPlayerColors: (colors) => set({ playerColors: colors }),
+  setPlayerGameData: (data) => set({ playerGameData: data }),
   setTerritoryStats: (stats) => set({ territoryStats: stats }),
   updateResources: (resources) => set((state) => ({
     resources: { ...state.resources, ...resources }
   })),
-  setCurrentTick: (tick) => set({ currentTick: tick }),
+  setCurrentTick: (tick) => {
+    const currentTick = useGameStore.getState().currentTick
+    if (tick !== currentTick) {
+      console.log(`[STORE] Tick updated in store: ${currentTick} -> ${tick}`)
+    }
+    set({ currentTick: tick })
+  },
   setCombatLogs: (logs) => set({ combatLogs: logs }),
   setRecentCombatLog: (log) => set({ recentCombatLog: log }),
   
@@ -160,8 +223,38 @@ export const useGameStore = create<GameState>((set, get) => ({
   selectAttack: (attack) => set({ selectedAttack: attack }),
   setCameraPosition: (position) => set({ cameraPosition: position }),
   setCommandMode: (mode) => set({ commandMode: mode }),
+  setTerritoryDebugMode: (enabled) => set({ territoryDebugMode: enabled }),
   
-  // Server action - send attack request to Supabase
+  // Reset all game state to initial values
+  resetGameState: () => set({
+    currentGame: null,
+    player: null,
+    playerGameData: null,
+    systems: [],
+    planets: [],
+    attacks: [],
+    territorySectors: [],
+    structures: [],
+    gameStats: [],
+    winnerPlayer: null,
+    playerColors: new Map(),
+    territoryStats: new Map(),
+    resources: {
+      gold: BigInt(0),
+      energy: 0,
+      minerals: 0,
+      research: 0,
+    },
+    currentTick: 0,
+    combatLogs: [],
+    recentCombatLog: null,
+    cameraPosition: { x: 0, y: 50, z: 100 },
+    selectedPlanet: null,
+    selectedAttack: null,
+    commandMode: null,
+  }),
+  
+  // Server action - send troops
   requestSendTroops: async (sourcePlanetId, targetPlanetId, troopCount) => {
     const state = get()
     const source = state.planets.find(p => p.id === sourcePlanetId)
@@ -177,22 +270,60 @@ export const useGameStore = create<GameState>((set, get) => ({
     const dz = target.z_pos - source.z_pos
     const distance = Math.sqrt(dx * dx + dy * dy + dz * dz)
     const travelMs = Math.ceil(distance / 2) * 100 // milliseconds
+    const arrivalAt = new Date(Date.now() + travelMs).toISOString()
     
-    // Create attack in Supabase
-    await supabase.from('planet_attacks').insert({
-      game_id: state.currentGame.id,
-      attacker_id: state.player.id,
-      source_planet_id: sourcePlanetId,
-      target_planet_id: targetPlanetId,
-      troops: troopCount,
-      arrival_at: new Date(Date.now() + travelMs).toISOString()
+    // Log attack creation attempt
+    console.log('[ATTACK] Creating attack:', {
+      sourcePlanetId,
+      targetPlanetId,
+      troopCount,
+      travelMs,
+      arrivalAt
     })
     
+    // Create attack in Supabase
+    const { data: attackData, error: attackError } = await supabase
+      .from('planet_attacks')
+      .insert({
+        game_id: state.currentGame.id,
+        attacker_id: state.player.id,
+        source_planet_id: sourcePlanetId,
+        target_planet_id: targetPlanetId,
+        troops: troopCount,
+        arrival_at: arrivalAt
+      })
+      .select()
+      .single()
+    
+    if (attackError) {
+      console.error('[ATTACK] Failed to create attack:', attackError)
+      console.error('[ATTACK] Error details:', {
+        code: attackError.code,
+        message: attackError.message,
+        details: attackError.details
+      })
+      return // Exit early on failure
+    }
+    
+    if (attackData) {
+      console.log('[ATTACK] Attack created successfully:', attackData.id)
+    }
+    
     // Deduct troops immediately (server will verify)
-    await supabase
+    console.log('[ATTACK] Deducting troops from source planet:', {
+      planetId: sourcePlanetId,
+      oldTroops: source.troops,
+      newTroops: source.troops - troopCount
+    })
+    
+    const { error: deductError } = await supabase
       .from('systems')
       .update({ troop_count: source.troops - troopCount })
       .eq('id', sourcePlanetId)
+    
+    if (deductError) {
+      console.error('[ATTACK] Failed to deduct troops:', deductError)
+    }
     
     // Clear command mode
     set({ commandMode: null })
@@ -210,7 +341,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!system || system.owner_id !== player.id) return false
     
     // Map structure type to cost key
-    const costMap: Record<string, keyof typeof ResourceSystem.COSTS> = {
+    const costMap: Record<string, StructureCostKey> = {
       'trade-station': 'BUILD_STRUCTURE_TRADE',
       'mining-station': 'BUILD_STRUCTURE_MINING',
       'colony-station': 'BUILD_STRUCTURE_COLONY',
@@ -219,16 +350,16 @@ export const useGameStore = create<GameState>((set, get) => ({
       'point-defense': 'BUILD_STRUCTURE_POINT_DEFENSE'
     }
     
-    const costKey = costMap[structureType]
+    const costKey: StructureCostKey | undefined = costMap[structureType]
     if (!costKey) return false
     
     const cost = ResourceSystem.COSTS[costKey]
     
     // Check affordability
     const canAfford = 
-      Number(state.resources.gold) >= (cost.credits || 0) &&
-      state.resources.energy >= (cost.energy || 0) &&
-      state.resources.minerals >= (cost.minerals || 0)
+      Number(state.resources.gold) >= cost.credits &&
+      state.resources.energy >= cost.energy &&
+      state.resources.minerals >= cost.minerals
     
     if (!canAfford) return false
     
@@ -237,9 +368,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       const { error: updateError } = await supabase
         .from('players')
         .update({
-          credits: player.credits - (cost.credits || 0),
-          energy: player.energy - (cost.energy || 0),
-          minerals: player.minerals - (cost.minerals || 0)
+          credits: player.credits - cost.credits,
+          energy: player.energy - cost.energy,
+          minerals: player.minerals - cost.minerals
         })
         .eq('id', player.id)
       
@@ -281,7 +412,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         .single()
       
       if (updatedPlayer) {
-        set((state) => ({
+        set(() => ({
           player: updatedPlayer,
           resources: {
             gold: BigInt(updatedPlayer.credits || 0),

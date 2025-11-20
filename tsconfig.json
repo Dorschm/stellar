@@ -24,6 +24,7 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"],
+  "include": ["src", "src/**/*"],
+  "exclude": ["supabase/functions", "supabase/functions/**/*"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

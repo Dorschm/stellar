@@ -11,7 +11,21 @@ This is a real-time strategy game adapted from [OpenFront.io](https://openfront.
 - Players paint the map by capturing planets
 - Green = Your planets, Red = Enemy planets, Gray = Neutral
 
-### 2. **Troops System**
+### 2. **Territory Expansion (OpenFront-Style)**
+- Territory expands gradually from owned planets over time
+- **Expansion Tiers**: Planets go through 3 expansion phases:
+  - **Tier 1** (0-5 seconds owned): Small expansion, 8 sectors per wave
+  - **Tier 2** (5-15 seconds owned): Medium expansion, 16 sectors per wave
+  - **Tier 3** (15+ seconds owned): Large expansion, 24 sectors per wave
+- **Expansion Rate**: Base expansion every 10 ticks (1 second)
+  - High troop count (>300): Faster expansion (every 0.8 seconds)
+  - Nebula planets: Slower expansion (every 1.5 seconds)
+  - Mineral-rich planets: Faster expansion (every 0.7 seconds)
+- **Natural Growth**: Territory expands from the edges (frontier) outward, creating organic-looking growth
+- **Strategic Value**: Older, more established territory is more visible and valuable
+- **Bot Expansion**: AI players expand territory naturally as they capture planets
+
+### 3. **Troops System**
 - Every owned planet has **troops** (displayed above planet)
 - Planets **auto-generate troops** every tick (5 troops/tick by default)
 - Maximum troops per planet: **500**
@@ -83,6 +97,8 @@ This is a real-time strategy game adapted from [OpenFront.io](https://openfront.
 - **Gold Generation**: 10 gold per planet per tick
 - **Travel Speed**: 2 distance units per tick
 - **Combat**: Simple subtraction (attacker troops - defender troops)
+- **Territory Expansion**: Progressive tiers (1-3) based on ownership duration
+- **Expansion Rate**: 8-24 sectors per wave, every 0.7-1.5 seconds depending on modifiers
 
 ## Strategy Tips
 
@@ -91,6 +107,10 @@ This is a real-time strategy game adapted from [OpenFront.io](https://openfront.
 3. **Chain attacks** by timing troop arrivals
 4. **Expand early** to increase troop production
 5. **Don't overextend** - protect your territory
+6. **Hold planets longer** to unlock faster territory expansion
+7. **Capture mineral-rich planets** for faster territorial growth
+8. **Avoid nebula planets** if you need quick expansion
+9. **Watch your territory expansion tier** in the HUD to optimize growth
 
 ---
 

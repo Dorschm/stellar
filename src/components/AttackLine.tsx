@@ -26,10 +26,26 @@ export function AttackLine({ attack, planets }: AttackLineProps) {
     ? 1
     : Math.min(1, Math.max(0, elapsedTicks / totalTicks))
   
+  // Debug logging (every 10th frame to avoid spam)
+  if (Math.random() < 0.1) {
+    console.log('[ATTACK LINE] Rendering attack:', {
+      id: attack.id,
+      progress: (progress * 100).toFixed(1) + '%',
+      retreating: attack.retreating,
+      currentTick,
+      startTick: attack.startTick,
+      arrivalTick: attack.arrivalTick
+    })
+  }
+  
   // Interpolate position
   const currentPos = useMemo(() => {
+    if (attack.retreating) {
+      // Retreat: interpolate from target back to source
+      return new THREE.Vector3().lerpVectors(targetPos, sourcePos, progress)
+    }
     return new THREE.Vector3().lerpVectors(sourcePos, targetPos, progress)
-  }, [sourcePos, targetPos, progress])
+  }, [sourcePos, targetPos, progress, attack.retreating])
   
   // Line color based on attacker and retreat status
   const player = useGameStore(state => state.player)
@@ -58,6 +74,14 @@ export function AttackLine({ attack, planets }: AttackLineProps) {
           <meshBasicMaterial color={lineColor} />
         </mesh>
         
+        {/* Retreat direction indicator */}
+        {attack.retreating && (
+          <mesh position={[0, 0, 0]} rotation={[0, 0, Math.PI]}>
+            <coneGeometry args={[0.3, 0.6, 8]} />
+            <meshBasicMaterial color="#ffaa00" />
+          </mesh>
+        )}
+        
         {/* Troop count text */}
         <Text
           position={[0, 1.5, 0]}
@@ -67,6 +91,17 @@ export function AttackLine({ attack, planets }: AttackLineProps) {
           anchorY="middle"
         >
           {attack.retreating ? `↩ ${attack.troops}` : attack.troops.toString()}
+        </Text>
+        
+        {/* ETA display */}
+        <Text
+          position={[0, 2.5, 0]}
+          fontSize={0.6}
+          color="#888888"
+          anchorX="center"
+          anchorY="middle"
+        >
+          {attack.retreating ? 'Retreating' : `ETA: ${Math.max(0, attack.arrivalTick - currentTick)} ticks`}
         </Text>
       </group>
     </group>

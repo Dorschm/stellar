@@ -28,11 +28,17 @@ export interface Game {
   name: string
   status: 'waiting' | 'active' | 'completed'
   max_players: number
+  current_players?: number
   victory_condition: number
   tick_rate: number
+  is_public?: boolean
   created_at: string
   started_at?: string
   ended_at?: string
+  game_players?: GamePlayer[]
+  winner_id?: string
+  victory_type?: 'territory_control' | 'elimination' | 'time_limit'
+  game_duration_seconds?: number
 }
 
 export interface GamePlayer {
@@ -42,6 +48,18 @@ export interface GamePlayer {
   is_alive: boolean
   systems_controlled: number
   placement_order: number
+  is_ready?: boolean
+  players?: Player
+  is_eliminated: boolean
+  eliminated_at?: string
+  final_territory_percentage?: number
+  total_troops_sent?: number
+  planets_captured?: number
+  final_placement?: number
+  /** Tracks if player is currently connected. Set to false on disconnect/unload. */
+  is_active?: boolean
+  /** Timestamp of last heartbeat ping. Updated every 30 seconds by client. */
+  last_seen?: string
 }
 
 export interface System {
@@ -67,6 +85,16 @@ export interface TerritorySector {
   z_pos: number
   controlled_by_planet_id: string
   captured_at: string
+  expansion_tier?: number  // 1-3 indicating expansion phase
+  expansion_wave?: number  // wave number for edge-based expansion
+  distance_from_planet?: number  // distance from controlling planet
+}
+
+export interface ExpansionMetrics {
+  ownershipDuration: number  // ticks owned
+  currentTier: number  // 1, 2, or 3
+  expansionRadius: number  // current expansion radius
+  sectorsPerWave: number  // how many sectors to add per expansion
 }
 
 export interface CombatLog {
@@ -82,12 +110,29 @@ export interface CombatLog {
   attacker_survivors: number
   defender_survivors: number
   winner_id: string | null
-  terrain_type: 'space' | 'nebula' | 'asteroid'
+  terrain_type: string
   had_flanking: boolean
   was_encircled: boolean
   had_defense_station: boolean
   combat_result: 'attacker_victory' | 'defender_victory' | 'retreat'
   occurred_at: string
+}
+
+export interface GameStats {
+  id: string
+  game_id: string
+  player_id: string
+  final_planets_controlled: number
+  final_territory_percentage: number
+  total_troops_sent: number
+  total_troops_lost: number
+  planets_captured: number
+  planets_lost: number
+  structures_built: number
+  total_combat_wins: number
+  total_combat_losses: number
+  peak_territory_percentage: number
+  created_at: string
 }
 
 export interface Structure {

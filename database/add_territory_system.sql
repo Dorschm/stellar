@@ -16,10 +16,16 @@ CREATE TABLE IF NOT EXISTS public.territory_sectors (
     UNIQUE(game_id, x_pos, y_pos, z_pos)
 );
 
+-- Add expansion metadata columns for progressive expansion
+ALTER TABLE territory_sectors ADD COLUMN IF NOT EXISTS expansion_tier INTEGER DEFAULT 1;
+ALTER TABLE territory_sectors ADD COLUMN IF NOT EXISTS expansion_wave INTEGER DEFAULT 0;
+ALTER TABLE territory_sectors ADD COLUMN IF NOT EXISTS distance_from_planet FLOAT;
+
 -- Add indexes for performance
 CREATE INDEX idx_territory_sectors_game ON territory_sectors(game_id);
 CREATE INDEX idx_territory_sectors_owner ON territory_sectors(owner_id);
 CREATE INDEX idx_territory_sectors_planet ON territory_sectors(controlled_by_planet_id);
+CREATE INDEX IF NOT EXISTS idx_territory_sectors_position ON territory_sectors(game_id, owner_id, x_pos, y_pos, z_pos);
 
 -- Create attacks table for tracking troop movements
 CREATE TABLE IF NOT EXISTS public.planet_attacks (
@@ -80,3 +86,21 @@ CREATE POLICY "Anyone can view game ticks" ON game_ticks
 
 CREATE POLICY "Only server can update ticks" ON game_ticks
     FOR ALL USING (false);
+
+-- Helper function to find edge sectors for progressive expansion
+CREATE OR REPLACE FUNCTION get_edge_sectors(p_game_id UUID, p_planet_id UUID)
+RETURNS TABLE(id UUID, x_pos FLOAT, y_pos FLOAT, z_pos FLOAT) AS $$
+BEGIN
+  RETURN QUERY
+  SELECT ts.id, ts.x_pos, ts.y_pos, ts.z_pos
+  FROM territory_sectors ts
+  WHERE ts.game_id = p_game_id
+    AND ts.controlled_by_planet_id = p_planet_id
+    AND ts.expansion_wave = (
+      SELECT MAX(expansion_wave) 
+      FROM territory_sectors 
+      WHERE game_id = p_game_id 
+        AND controlled_by_planet_id = p_planet_id
+    );
+END;
+$$ LANGUAGE plpgsql;

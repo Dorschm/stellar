@@ -2,42 +2,99 @@ import { useEffect, useState } from 'react'
 import { Game } from './components/Game'
 import { StartScreen } from './components/StartScreen'
 import { GameLobby } from './components/GameLobby'
+import { VictoryScreen } from './components/VictoryScreen'
 import { useGameStore } from './store/gameStore'
 import { supabase } from './services/supabase'
 import type { System } from './services/supabase'
 
-type GameState = 'start' | 'lobby' | 'active' | 'completed' | 'playing' | 'menu'
+type GameState = 'start' | 'lobby' | 'active' | 'completed' | 'playing' | 'menu' | 'defeated'
 
 function App() {
   const [gameState, setGameState] = useState<GameState>('start')
   const currentGame = useGameStore(state => state.currentGame)
-  const setPlayer = useGameStore(state => state.setPlayer)
+  const player = useGameStore(state => state.player)
+  const gameStats = useGameStore(state => state.gameStats)
+  const winnerPlayer = useGameStore(state => state.winnerPlayer)
   const setGame = useGameStore(state => state.setGame)
   const setPlanets = useGameStore(state => state.setPlanets)
   const setAttacks = useGameStore(state => state.setAttacks)
+  const fetchGameStats = useGameStore(state => state.fetchGameStats)
+  const resetGameState = useGameStore(state => state.resetGameState)
   
   useEffect(() => {
     // Check game state when it changes
     if (currentGame) {
       if (currentGame.status === 'waiting') {
+        console.log('[APP] Game status: waiting, showing lobby')
         setGameState('lobby')
       } else if (currentGame.status === 'active') {
+        console.log('[APP] Game status: active, initializing world')
         setGameState('active')
         // Initialize game world when entering active state
         initGameWorld()
       } else if (currentGame.status === 'completed') {
+        console.log('[APP] Game status: completed, fetching stats')
         setGameState('completed')
+        // Fetch game stats when game completes
+        fetchGameStatsData()
       }
     }
   }, [currentGame])
+  
+  const fetchGameStatsData = async () => {
+    if (!currentGame) return
+    
+    try {
+      // Fetch game stats using the store method - single source of truth
+      await fetchGameStats(currentGame.id)
+    } catch (error) {
+      console.error('Error fetching game stats:', error)
+    }
+  }
+  
+  const handleGameComplete = () => {
+    // Refresh game data to get completion status
+    if (currentGame) {
+      // Small delay to ensure DB writes are committed
+      setTimeout(() => {
+        supabase
+          .from('games')
+          .select('*')
+          .eq('id', currentGame.id)
+          .single()
+          .then(({ data }) => {
+            if (data) {
+              setGame(data)
+              // This will trigger the useEffect above to set gameState to 'completed'
+            }
+          })
+      }, 100)
+    }
+  }
+  
+  const handlePlayerEliminated = () => {
+    // Player has been eliminated - show defeat screen
+    console.log('[APP] Player eliminated, showing defeat screen')
+    setGameState('defeated')
+    // Fetch stats early for the defeat screen
+    if (currentGame) {
+      fetchGameStatsData()
+    }
+  }
+  
+  const handleReturnToMenu = () => {
+    // Reset all game state and return to start menu
+    resetGameState()
+    setGameState('start')
+  }
   
   const initGameWorld = async () => {
     if (currentGame) {
       // Load systems (planets) from database
       let attempts = 0
-      let systems: System[] | null = null
+      let systems: System[] = []
       
-      while (attempts < 5 && (!systems || systems.length === 0)) {
+      while (attempts < 5 && systems.length === 0) {
         const { data, error } = await supabase
           .from('systems')
           .select('*')
@@ -57,7 +114,7 @@ function App() {
         await new Promise(resolve => setTimeout(resolve, 500))
       }
       
-      if (systems && systems.length > 0) {
+      if (systems.length > 0) {
         setPlanets(systems) // Converts systems to planets with troops
         setAttacks([]) // Start with no active attacks
         setGameState('playing')
@@ -91,24 +148,32 @@ function App() {
   if (gameState === 'playing') {
     return (
       <div className="w-full h-screen bg-black">
-        <Game />
+        <Game onGameComplete={handleGameComplete} onPlayerEliminated={handlePlayerEliminated} />
       </div>
+    )
+  }
+  
+  if (gameState === 'defeated') {
+    return (
+      <VictoryScreen
+        game={currentGame}
+        gameStats={gameStats}
+        winnerPlayer={winnerPlayer}
+        currentPlayer={player}
+        onReturnToMenu={handleReturnToMenu}
+      />
     )
   }
   
   if (gameState === 'completed') {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center text-white">
-        <div className="text-center">
-          <h1 className="text-4xl font-bold mb-4">Game Over</h1>
-          <button
-            onClick={() => window.location.reload()}
-            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
-          >
-            Return to Menu
-          </button>
-        </div>
-      </div>
+      <VictoryScreen
+        game={currentGame}
+        gameStats={gameStats}
+        winnerPlayer={winnerPlayer}
+        currentPlayer={player}
+        onReturnToMenu={handleReturnToMenu}
+      />
     )
   }
   
