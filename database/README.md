@@ -13,10 +13,17 @@ This directory contains SQL migrations for setting up your Supabase database wit
 7. **`fix_game_tick_rls_policies.sql`** - ⚠️ **CRITICAL FIX** for game tick processing
 8. **`fix_planet_attacks_rls.sql`** - ⚠️ **CRITICAL FIX** for attack system (anonymous gameplay)
 9. **`add_player_activity_tracking.sql`** - Player presence and heartbeat tracking system
+10. **`add_game_players_missing_columns.sql`** - ⚠️ **CRITICAL**: Renames `color` to `empire_color`, adds `is_alive`, `systems_controlled`, and stats columns. Required for game creation and tick processing.
+11. **`fix_cors_and_rls_policies.sql`** - ⚠️ **CRITICAL FIX** for structures table schema and auth-based policies (note: only verifies game_players policies which are already anonymous-friendly from setup_rls_policies.sql)
+12. **`add_economic_columns.sql`** - ⚠️ **REQUIRED** Adds economic resource columns to players table and gameplay columns to systems table
+
+⚠️ **CRITICAL**: If you see 'credits column not found' or 'troop_count column not found' errors, run this migration immediately and reload schema cache.
 
 ⚠️ **IMPORTANT**: If you've already run the territory system migration:
 - Ticks not processing? Run `fix_game_tick_rls_policies.sql`
 - Attacks not creating? Run `fix_planet_attacks_rls.sql`
+- Structures table missing game_id column? `fix_cors_and_rls_policies.sql` will add it automatically
+- game_players policies are configured by `setup_rls_policies.sql` and verified by `fix_cors_and_rls_policies.sql`
 
 ## Game Tick System
 
@@ -186,7 +193,17 @@ The `planet_attacks` table tracks troop movements between planets. Attacks are c
 
 **Migration Required**: If attacks aren't creating or visible, run `fix_planet_attacks_rls.sql` to replace the auth-based policies from `add_territory_system.sql` with anonymous-friendly policies that use session variables.
 
-**Application Integration Required**: After applying the migration, update your client code to call `set_player_context` before fetching attacks. See Game.tsx polling logic for implementation location.
+**Application Integration Required**: After applying the migration, update your client code to call `set_player_context` before fetching attacks or structures.
+
+**Example usage:**
+```typescript
+// Set player context once per session or when player changes
+await supabase.rpc('set_player_context', { player_id: currentPlayer.id });
+
+// Now queries will use this player context for RLS checks
+const { data: attacks } = await supabase.from('planet_attacks').select('*');
+const { data: structures } = await supabase.from('structures').select('*');
+```
 
 ## Setup Instructions
 
@@ -284,6 +301,15 @@ The RLS policies implement the following security rules:
 - ✅ **Update**: Fleet owner only
 - ✅ **Delete**: Fleet owner only
 
+### Structures
+- ✅ **Create**: Structure owner only (current player must match owner_id)
+- ✅ **Read**: Game participants only (current player must be in game)
+- ✅ **Update**: Structure owner only (current player must match owner_id)
+- ✅ **Delete**: Structure owner only (current player must match owner_id)
+- Uses anonymous-friendly policies after `fix_cors_and_rls_policies.sql` migration
+- **Requires**: Application must call `set_player_context(player_id)` before queries
+- **Schema**: id, game_id, system_id, owner_id, structure_type, level, health, built_at, is_active, created_at
+
 ## Performance
 
 The policies include optimized indexes for:
@@ -316,6 +342,10 @@ After running the migrations, test that:
 7. ✅ Players can only see their game's data
 
 ## Troubleshooting
+
+### Comprehensive Schema Diagnostics
+
+Before troubleshooting specific errors, run `database/comprehensive_schema_diagnostic.sql` to check for missing columns across all critical tables (games, game_players, systems, players). This identifies schema mismatches that cause 'Could not find column in schema cache' errors. See `database/SCHEMA_FIX_GUIDE.md` for a complete step-by-step fix workflow.
 
 ### "permission denied for table X"
 - Run `setup_rls_policies.sql` 
@@ -384,6 +414,229 @@ After running the migrations, test that:
 - Verify `mapAttackRowToAttack` is converting timestamps correctly
 - Check that attacks aren't already 'arrived' (should be 'in_transit' or 'retreating')
 
+### Structures Not Creating or Visible
+
+**Symptoms:**
+- Building structures fails with permission denied errors
+- Structures table queries return 0 rows even though structures exist
+- Console shows RLS policy errors (400/406 errors)
+
+**Diagnosis:**
+1. Check if `fix_cors_and_rls_policies.sql` has been applied:
+   ```sql
+   SELECT policyname FROM pg_policies WHERE tablename = 'structures';
+   ```
+   - Should see: `structures_select_policy`, `structures_insert_policy`, `structures_update_policy`, `structures_delete_policy`
+   - Should NOT see policies checking `auth.uid()`
+
+2. **Check if player context is set**: The RLS policies require calling `set_player_context` before querying
+   - Add this before fetching structures: `await supabase.rpc('set_player_context', { player_id: player.id })`
+   - Without this, the SELECT policy will block all structure queries
+
+3. Verify `set_player_context` function exists:
+   ```sql
+   SELECT proname FROM pg_proc WHERE proname = 'set_player_context';
+   ```
+   - Should return one row with `proname = set_player_context`
+
+4. Test with player context set:
+   ```sql
+   -- Set context for a player in the game
+   SELECT set_player_context('your-player-id'::uuid);
+   
+   -- Now query should work
+   SELECT * FROM structures WHERE game_id = 'your-game-id';
+   ```
+
+**Solution:**
+- Run `fix_cors_and_rls_policies.sql` migration (includes function and policies)
+- Update client code to call `set_player_context` before any structure queries
+- Example location: In your game initialization or player selection logic
+- Reference implementation: See how `planet_attacks` queries use `set_player_context`
+
+### PGRST204 Schema Cache Errors
+
+**Symptoms:**
+- Console shows repeating errors: `Failed to load resource: the server responded with a status of 400 ()` 
+- Error message: `{"code": "PGRST204", "message": "Could not find the 'column_name' column of 'table_name' in the schema cache"}` 
+- PATCH/POST requests fail even though the column exists in the database
+- Occurs after running migrations that add new columns
+
+**Diagnosis:**
+1. Verify the column exists in the database:
+   ```sql
+   SELECT column_name, data_type 
+   FROM information_schema.columns 
+   WHERE table_name = 'game_players' 
+   AND column_name IN ('is_active', 'last_seen');
+   ```
+   - Should return 2 rows showing both columns exist
+   - If no rows returned, the migration hasn't been applied yet
+
+2. Check PostgREST schema cache timestamp:
+   - Go to Supabase Dashboard → Project Settings → API
+   - Look for "Schema Cache" section
+   - Note the last refresh timestamp
+
+3. Verify the migration was applied:
+   ```sql
+   SELECT EXISTS (
+     SELECT 1 FROM pg_indexes 
+     WHERE indexname = 'idx_game_players_activity'
+   );
+   ```
+   - Should return `true` if migration was applied
+
+**Solution:**
+1. **Apply the migration** (if not already done):
+   - Run `database/add_player_activity_tracking.sql` in Supabase SQL Editor
+   - Verify success messages appear
+
+2. **Reload PostgREST schema cache**:
+   - Go to Supabase Dashboard → Project Settings → API
+   - Scroll to "Schema Cache" section
+   - Click **Reload Schema** button
+   - Wait for confirmation (2-5 seconds)
+   - Verify timestamp updates
+
+3. **Test the fix**:
+   - Refresh your application in the browser
+   - Check DevTools Console for PGRST204 errors (should be gone)
+   - Verify PATCH requests to `game_players` succeed (status 200/204)
+   - Join a game and confirm heartbeat updates work every 30 seconds
+
+**Prevention:**
+- Always reload schema cache after running migrations that modify table structure
+- Document schema cache refresh in deployment procedures
+- Consider automating cache refresh in CI/CD pipelines
+
+**Reference:**
+- See `SUPABASE_SCHEMA_CACHE_REFRESH.md` for detailed cache refresh instructions
+- PostgREST caches schema for performance but must be manually refreshed after DDL changes
+- For a comprehensive check of all tables, use `database/comprehensive_schema_diagnostic.sql` and follow `database/SCHEMA_FIX_GUIDE.md`.
+
+### "Could not find the 'empire_color' column of 'game_players' in the schema cache"
+
+**Cause**: The `add_game_players_missing_columns.sql` migration has not been applied, or the schema cache was not reloaded after applying it
+**Affected Operations**: Creating games (via `gameService.createGame`), joining games, starting games, tick processing
+**Solution**:
+1. Verify migration was applied: `SELECT column_name FROM information_schema.columns WHERE table_name = 'game_players' AND column_name = 'empire_color';` (should return 1 row)
+2. If query returns 0 rows, run `database/add_game_players_missing_columns.sql` in Supabase SQL Editor
+3. **MANDATORY**: Reload schema cache via Dashboard → Settings → API → Reload Schema (see `SUPABASE_SCHEMA_CACHE_REFRESH.md`)
+4. Test by creating a new game - should succeed without errors
+**Related Issues**: Similar errors for `is_alive`, `systems_controlled`, `is_eliminated` columns indicate the same root cause
+- See `database/SCHEMA_FIX_GUIDE.md` for a comprehensive workflow covering all missing columns.
+
+### "Could not find the 'difficulty' column of 'games' in the schema cache"
+
+**Symptoms:**
+- Game creation fails immediately with error: "Could not find the 'difficulty' column of 'games' in the schema cache"
+- Error occurs when clicking "Create Game" button
+- Console shows 400 or PGRST204 errors
+- Prevents all gameplay as games cannot be created
+
+**Diagnosis:**
+1. Verify column exists in database:
+   ```sql
+   SELECT column_name FROM information_schema.columns 
+   WHERE table_name = 'games' AND column_name = 'difficulty';
+   ```
+   - If returns 1 row: Column exists, schema cache needs reload
+   - If returns 0 rows: Migration not applied yet
+
+**Solution:**
+1. Run `database/add_difficulty_column.sql` in Supabase SQL Editor (if not already applied)
+2. Go to Supabase Dashboard → Project Settings → API
+3. Click **Reload Schema** button in Schema Cache section
+4. Wait for timestamp to update (2-5 seconds)
+5. Refresh browser and try creating a game again
+
+**Verification:**
+- Game creation succeeds without errors
+- Console shows: "Created game <id> with creator <player_id>"
+- Bots are added with specified difficulty when game starts
+
+**Reference:**
+- See `SUPABASE_SCHEMA_CACHE_REFRESH.md` for detailed cache reload instructions
+- See lines 452-511 below for PGRST204 troubleshooting workflow
+- Difficulty values: 'easy', 'normal', 'hard' (stored in games table, passed to bot creation RPC)
+- For a comprehensive diagnostic covering all tables, see `database/SCHEMA_FIX_GUIDE.md`.
+
+### "Could not find the 'credits' column" or "troop_count column not found" Errors
+
+**Symptoms:**
+- Game creation fails with error: "Could not find the 'credits' column of 'players' in the schema cache"
+- Bot creation fails when starting games
+- Console shows errors about missing columns: `credits`, `energy`, `minerals`, `research_points` (players table)
+- System generation fails with errors about: `troop_count`, `energy_generation`, `has_minerals`, `in_nebula` (systems table)
+- Functions like `deduct_troops` fail with "column does not exist" errors
+
+**Diagnosis:**
+1. Check if economic columns exist in players table:
+   ```sql
+   SELECT column_name FROM information_schema.columns 
+   WHERE table_name = 'players' 
+   AND column_name IN ('credits', 'energy', 'minerals', 'research_points');
+   ```
+   - Should return 4 rows
+   - If 0 rows, migration hasn't been applied
+
+2. Check if gameplay columns exist in systems table:
+   ```sql
+   SELECT column_name FROM information_schema.columns 
+   WHERE table_name = 'systems' 
+   AND column_name IN ('troop_count', 'energy_generation', 'has_minerals', 'in_nebula');
+   ```
+   - Should return 4 rows
+   - If you see 'troops' instead of 'troop_count', migration hasn't been applied
+
+3. Verify bot creation function references:
+   ```sql
+   SELECT prosrc FROM pg_proc WHERE proname = 'create_bot_player';
+   ```
+   - Check if INSERT statement includes credits, energy, minerals, research_points
+
+**Root Cause:**
+- The base schema in `FULL_DATABASE_SETUP.sql` (prior to this migration) didn't include economic resource columns
+- Code in `add_bot_players.sql` and `gameService.ts` expects these columns to exist
+- The `systems` table used `troops` but all code references `troop_count` 
+- This mismatch causes INSERT failures when creating bots or generating maps
+
+**Solution:**
+1. **Apply the migration**:
+   - Run `database/add_economic_columns.sql` in Supabase SQL Editor
+   - Verify success messages for each ALTER TABLE statement
+   - Check that data migration completed (existing troops copied to troop_count)
+
+2. **Reload PostgREST schema cache** (CRITICAL):
+   - Go to Supabase Dashboard → Project Settings → API
+   - Click **Reload Schema** button in "Schema Cache" section
+   - Wait for confirmation (2-5 seconds)
+   - Verify timestamp updates
+
+3. **Test the fix**:
+   - Create a new game in your application
+   - Start the game (which triggers bot creation)
+   - Verify bots are added successfully (check game_players table)
+   - Confirm no console errors about missing columns
+   - Check that systems have troop_count values (not NULL)
+
+4. **For fresh database setups**:
+   - Use the updated `FULL_DATABASE_SETUP.sql` which includes these columns in base schema
+   - No separate migration needed for new projects
+
+**Prevention:**
+- Always run migrations in documented order
+- Reload schema cache after any DDL changes (ALTER TABLE, CREATE TABLE)
+- Use `IF NOT EXISTS` clauses in migrations for idempotency
+- Test bot creation and game start after schema changes
+
+**Reference:**
+- See `add_economic_columns.sql` for detailed column definitions and defaults
+- See `add_bot_players.sql` line 39 for INSERT statement requiring these columns
+- See `gameService.ts` lines 248-252 for systems column requirements
+- For a comprehensive check of all missing columns, run `database/comprehensive_schema_diagnostic.sql` and follow `database/SCHEMA_FIX_GUIDE.md`.
+
 ### Game ticks not processing
 
 **Symptoms:**
@@ -414,11 +667,310 @@ After running the migrations, test that:
 - This fixes blocking `USING (false)` policies on game_ticks and territory_sectors
 - Restart your game after applying the fix
 
+## Debugging Tick Processing and Resource Generation
+
+### Step-by-Step Diagnostic Instructions
+
+If you're experiencing issues with tick processing, troop growth, or resource generation, follow these diagnostic steps to identify the root cause:
+
+#### 1. Check if game_ticks table is being updated
+
+Run this query to verify the game tick system is active:
+
+```sql
+SELECT game_id, tick_number, last_tick_at 
+FROM game_ticks 
+WHERE game_id = '<your-game-id>' 
+ORDER BY last_tick_at DESC 
+LIMIT 1;
+```
+
+**Expected result:**
+- `last_tick_at` should show a recent timestamp (within last 5 seconds)
+- `tick_number` should be a large number that increments when you run the query again after 1 second
+
+**If no results or stale timestamp:**
+- The game-tick Edge Function is not running or failing
+- Check Edge Function logs in Supabase Dashboard
+- Verify RLS policies allow service_role INSERT/UPDATE on game_ticks table
+- See `fix_game_tick_rls_policies.sql` for correct policy configuration
+
+#### 2. Verify Edge Function is running
+
+Check Supabase Dashboard → Edge Functions → game-tick → Logs for:
+
+- `[TICK] Successfully updated tick to X for game Y` - confirms tick updates are working
+- `[TICK] Troop generation complete: +X troops across Y planets` - confirms troop generation is running
+- `[TICK] Player Z: Credits +X (...), Energy +X (...), Minerals +X (...)` - confirms resource generation per player
+- `[TICK] Resource generation complete for X players` - confirms all players processed
+
+**If no logs or errors:**
+- Edge Function may not be deployed or invoked
+- Check browser console for `[CLIENT] Triggering game tick` logs (should appear every second)
+- Verify game status is 'active' in games table
+- Check for CORS errors blocking Edge Function invocation
+
+#### 3. Confirm RLS policies allow service_role operations
+
+Run this query to check policies on game_ticks table:
+
+```sql
+SELECT policyname, cmd, roles, qual, with_check 
+FROM pg_policies 
+WHERE tablename = 'game_ticks';
+```
+
+**Expected result:**
+Should include policies like:
+- `Service role can update game_ticks` with roles `{service_role}` and cmd `UPDATE`
+- `Service role can insert game_ticks` with roles `{service_role}` and cmd `INSERT`
+
+**If missing or incorrect:**
+- Run `fix_game_tick_rls_policies.sql` migration
+- This adds proper service_role policies for server-side operations
+
+#### 4. Check player resources are updating
+
+Run this query twice with a 5-second gap to see if resources increase:
+
+```sql
+SELECT id, username, credits, energy, minerals 
+FROM players 
+WHERE id = '<your-player-id>';
+```
+
+**Expected result:**
+- Second query should show increased `credits` (if you own planets)
+- `energy` should increase based on planet count
+- `minerals` should increase if you have mining stations on mineral-rich planets
+
+**If resources are not increasing:**
+- Check if you own any planets: `SELECT COUNT(*) FROM systems WHERE owner_id = '<player-id>' AND game_id = '<game-id>'`
+- If count is 0, you have no income (need to capture planets)
+- If count > 0, check Edge Function logs for resource generation errors
+- Verify planets table has required columns: `troop_count`, `energy_generation`, `has_minerals`
+
+#### 5. Verify troops are growing on owned planets
+
+Run this query to check troop counts:
+
+```sql
+SELECT id, name, troop_count, owner_id 
+FROM systems 
+WHERE game_id = '<game-id>' 
+AND owner_id IS NOT NULL 
+LIMIT 5;
+```
+
+Run again after 10 seconds to see if `troop_count` increases.
+
+**Expected result:**
+- `troop_count` should increase based on OpenFront formula: `base = 10 + (troops^0.73)/4`, `growth = base * (1 - troops/maxTroops)`
+- Planets with low troops should grow faster than planets near max capacity (500 + bonuses)
+
+**If troops are not growing:**
+- Check Edge Function logs for `[TICK] Updated troop counts for X planets` messages
+- Verify `troop_count` column exists (not `troops`): 
+  ```sql
+  SELECT column_name FROM information_schema.columns WHERE table_name = 'systems' AND column_name = 'troop_count';
+  ```
+- If column is missing or named `troops`, run `add_economic_columns.sql` migration
+- Reload schema cache after migration: Dashboard → Settings → API → Reload Schema
+
+### Common Issues and Solutions
+
+#### Issue: "No tick data found" warning in browser console
+
+**Cause:** `game_ticks` table is empty for the game, or RLS policies block client access.
+
+**Solution:**
+1. Ensure game status is 'active': `SELECT status FROM games WHERE id = '<game-id>'`
+2. Verify Edge Function is being invoked: Check for `[CLIENT] Triggering game tick` logs in browser console every second
+3. Check Edge Function can create tick records: Run `fix_game_tick_rls_policies.sql` to add service_role policies
+4. Verify client can read tick records: Policies should allow SELECT for authenticated/anon users
+
+#### Issue: Resources not increasing
+
+**Cause 1:** Player owns no planets (no income source).
+
+**Solution:** Capture planets by sending troops to neutral/enemy systems.
+
+**Cause 2:** Edge Function resource generation is failing.
+
+**Solution:**
+1. Check Edge Function logs for errors during resource generation
+2. Verify players table has columns: `credits`, `energy`, `minerals` (run `add_economic_columns.sql` if missing)
+3. Reload schema cache after adding columns
+4. Check for constraint violations or null values in player resources
+
+**Cause 3:** Client is not polling or fetching player data.
+
+**Solution:**
+1. Check browser console for `[CLIENT] Resources updated:` logs (should appear every second)
+2. Verify `setPlayer()` is called with updated player data
+3. Check store logs for resource deltas: `[STORE] Resources updated:` with old/new/delta values
+
+#### Issue: Troops not growing
+
+**Cause 1:** Planets have no owner (neutral planets don't generate troops).
+
+**Solution:** Only owned planets generate troops. Capture planets by sending attacks.
+
+**Cause 2:** Troop generation code is not running in Edge Function.
+
+**Solution:**
+1. Check Edge Function logs for `[TICK] Troop generation complete:` messages
+2. Verify OpenFront formula is being applied (logs should show base, ratio, growth values)
+3. Check for errors during troop update queries
+
+**Cause 3:** `troop_count` column missing or misnamed.
+
+**Solution:**
+1. Verify column name: `SELECT column_name FROM information_schema.columns WHERE table_name = 'systems' AND column_name = 'troop_count'`
+2. If named `troops`, run `add_economic_columns.sql` to rename to `troop_count`
+3. Reload schema cache after migration
+
+### Expected Behavior Reference
+
+Use this as a baseline to verify your game is working correctly:
+
+#### Tick Processing
+- **Tick increment rate:** Every 100ms (10 ticks/second)
+- **Browser console logs:** `[CLIENT] Tick updated` every second with incrementing tick numbers
+- **Edge Function logs:** `[TICK] Successfully updated tick to X` every 100ms (may be throttled in logs)
+
+#### Resource Generation  
+- **Credits:** +10 per owned planet per tick
+- **Energy:** Base 100 + (ownedPlanets^0.6 * 100) per tick, modified by efficiency (optimal at 42% capacity)
+- **Minerals:** +50 per Mining Station on mineral-rich planets per tick
+- **Resource logging:** `[TICK] Player X: Credits +Y (...), Energy +Z (...)` in Edge Function logs
+- **Client sync:** `[STORE] Resources updated:` and `[CLIENT] Resources updated:` logs show deltas every second
+
+#### Troop Growth
+- **Formula:** `base = 10 + (troops^0.73)/4`, `growth = base * (1 - troops/maxTroops)`
+- **Growth rate:** Faster when troops are low, slower when approaching max
+- **Max troops:** 500 base + 100 per Colony Station level
+- **Logging:** `[TICK] Planet X (Owner: Y): A -> B troops` for first 5 planets per tick
+- **Client display:** HUD shows growth rate and efficiency percentage for selected planet
+
+#### Client-Side Polling
+- **Game state fetch:** Every 1 second
+- **Expected logs:** 
+  - `[CLIENT] Fetching tick data for game X`
+  - `[CLIENT] Tick fetched successfully:` with gameId, previousTick, newTick, timestamp
+  - `[CLIENT] Fetching player resources for X`
+  - `[CLIENT] Resources updated:` with old/new/delta for each resource
+
+### Links to Related Files
+
+Refer to these migrations if you need to fix specific issues:
+
+- **`fix_game_tick_rls_policies.sql`** - Fixes RLS policies blocking game tick updates
+- **`fix_cors_and_rls_policies.sql`** - Fixes CORS issues and auth-based RLS policies for structures
+- **`add_economic_columns.sql`** - Adds missing resource columns to players and systems tables
+
+Check these code files for implementation details:
+
+- **`supabase/functions/game-tick/index.ts`** - Server-side game logic (troop growth, resource generation, combat)
+- **`src/store/gameStore.ts`** - Client-side resource state management
+- **`src/components/Game.tsx`** - Client polling and Edge Function invocation
+- **`src/components/HUD.tsx`** - Resource and troop growth display
+- **`src/game/ResourceSystem.ts`** - Resource calculation formulas
+
 ### Performance issues
 - Check if indexes were created
 - Run `EXPLAIN ANALYZE` on slow queries
 - Consider adding more specific indexes
 - Territory expansion now uses optimized single query instead of per-planet queries
+
+### Edge Function CORS Errors
+
+**Symptoms:**
+- Browser console shows "blocked by CORS policy"
+- "No 'Access-Control-Allow-Origin' header" errors
+- Edge Function invocations fail from localhost:3000
+- POST requests to /game-tick return network errors
+
+**Diagnosis:**
+1. Check browser console for CORS preflight errors
+2. Verify game-tick function has OPTIONS handler:
+   - Check `supabase/functions/game-tick/index.ts` for OPTIONS method handling
+3. Verify CORS headers in all responses (success and error)
+
+**Solution:**
+- Ensure `game-tick/index.ts` includes CORS headers in all responses
+- Add OPTIONS method handler for preflight requests
+- Include `Access-Control-Allow-Origin: *` in all Response headers
+- Reference pattern: `supabase/functions/mark-inactive/index.ts` has correct CORS implementation
+
+## Setup Instructions
+
+### Step 1: Create Tables
+Run migrations 1-6 in order to set up the base schema.
+
+### Step 2: Apply Critical Fixes
+Run migrations 7-9 to fix RLS policies for game functionality.
+
+### Step 2.5: Add Economic and Gameplay Columns (If Missing)
+If you're migrating an existing database that was set up before this migration existed:
+1. Run `add_economic_columns.sql` in Supabase SQL Editor
+2. Verify all ALTER TABLE statements succeed
+3. **CRITICAL**: Reload schema cache (Dashboard → Settings → API → Reload Schema)
+4. Test game creation and bot spawning
+
+Skip this step if:
+- You're using the latest `FULL_DATABASE_SETUP.sql` (already includes these columns)
+- You've already run this migration successfully
+- Diagnostic query shows all 8 columns exist (4 in players, 4 in systems)
+
+### Step 3: Fix Remaining Auth-Based Policies (If Needed)
+If you see 400/406 errors or "auth.uid()" errors in console:
+- Run `fix_cors_and_rls_policies.sql` migration
+- This fixes structures table schema and replaces auth-based policies with anonymous-friendly policies
+- Verifies game_players policies (which are already anonymous-friendly from setup_rls_policies.sql)
+- Creates `set_player_context` RPC function for session-based player identification
+- **Important**: Application must call `set_player_context` before querying structures
+  ```typescript
+  await supabase.rpc('set_player_context', { player_id: currentPlayer.id });
+  ```
+
+### Step 4: Deploy Edge Functions
+Deploy the game-tick and mark-inactive Edge Functions with proper CORS support.
+
+### Step 5: Verify Setup
+
+0. Verify economic and gameplay columns exist:
+   ```sql
+   -- Should return 8 rows total (4 from each table)
+   SELECT table_name, column_name, data_type, column_default
+   FROM information_schema.columns
+   WHERE table_name IN ('players', 'systems')
+   AND column_name IN ('credits', 'energy', 'minerals', 'research_points', 
+                       'troop_count', 'energy_generation', 'has_minerals', 'in_nebula')
+   ORDER BY table_name, column_name;
+   ```
+
+1. Check that game ticks are processing (tick number incrementing)
+2. Verify structures can be created and queried
+   ```sql
+   -- Set player context first (replace with actual player_id)
+   SELECT set_player_context('00000000-0000-0000-0000-000000000000'::uuid);
+   
+   -- Now query structures (will only show structures in games this player is in)
+   SELECT id, game_id, system_id, owner_id, structure_type, level
+   FROM structures
+   LIMIT 5;
+   ```
+3. Confirm attacks are animating properly
+4. Test player activity tracking works
+5. Verify all indexes are present:
+   ```sql
+   SELECT tablename, indexname
+   FROM pg_indexes
+   WHERE tablename IN ('game_ticks', 'territory_sectors', 'structures', 'game_players')
+   AND indexname LIKE 'idx_%'
+   ORDER BY tablename, indexname;
+   ```
 
 ## Reference
 

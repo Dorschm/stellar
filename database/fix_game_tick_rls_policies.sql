@@ -20,7 +20,6 @@ CREATE POLICY "Service role can insert game ticks"
   ON game_ticks
   FOR INSERT
   TO service_role
-  USING (true)
   WITH CHECK (true);
 
 -- Allow service_role to UPDATE tick numbers
@@ -51,7 +50,6 @@ CREATE POLICY "Service role can insert territory sectors"
   ON territory_sectors
   FOR INSERT
   TO service_role
-  USING (true)
   WITH CHECK (true);
 
 -- Allow service_role to UPDATE sector ownership on planet capture

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useGameStore } from '../store/gameStore'
 import type { CombatLog } from '../services/supabase'
 import { BuildMenu } from './BuildMenu'
@@ -19,12 +19,17 @@ export function HUD() {
   const structures = useGameStore(state => state.structures)
   const territoryDebugMode = useGameStore(state => state.territoryDebugMode)
   const setTerritoryDebugMode = useGameStore(state => state.setTerritoryDebugMode)
+  const isTickStale = useGameStore(state => state.isTickStale)
   
   const [isBuildMenuOpen, setIsBuildMenuOpen] = useState(false)
   const [buildTargetSystemId, setBuildTargetSystemId] = useState<string | undefined>(undefined)
   const [newSectorCount, setNewSectorCount] = useState(0)
   const [showExpansionNotification, setShowExpansionNotification] = useState(false)
   const [recentExpansions, setRecentExpansions] = useState<Array<{timestamp: number, count: number}>>([])
+  const [resourceRates, setResourceRates] = useState<{ gold: number; energy: number; minerals: number }>({ gold: 0, energy: 0, minerals: 0 })
+  
+  // Store previous resource snapshot for rate calculation
+  const prevResourcesRef = useRef({ gold: Number(resources.gold), energy: resources.energy, minerals: resources.minerals })
 
   const playerTerritoryPercentage = player?.id
     ? territoryStats.get(player.id)?.percentage ?? 0
@@ -67,19 +72,42 @@ export function HUD() {
     }
   }, [territorySectors, player?.id, prevSectorCount])
   
+  // Calculate resource generation rates using ref to track previous values
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      // Compute delta from stored previous snapshot
+      setResourceRates({
+        gold: Number(resources.gold) - prevResourcesRef.current.gold,
+        energy: resources.energy - prevResourcesRef.current.energy,
+        minerals: resources.minerals - prevResourcesRef.current.minerals
+      })
+      // Update ref with current snapshot after computing delta
+      prevResourcesRef.current = { gold: Number(resources.gold), energy: resources.energy, minerals: resources.minerals }
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [resources])
+  
   return (
     <>
       {/* Top Bar - Resources (OpenFront style) */}
       <div className="absolute top-0 left-0 right-0 p-4 bg-gradient-to-b from-black/80 to-transparent pointer-events-none">
-        <div className="flex justify-center space-x-8 text-white">
-          <ResourceDisplay label="Credits" value={Number(resources.gold)} color="text-yellow-400" icon="💰" />
-          <ResourceDisplay label="Energy" value={resources.energy} color="text-cyan-400" icon="⚡" />
-          <ResourceDisplay label="Minerals" value={resources.minerals} color="text-blue-400" icon="💎" />
-          <ResourceDisplay label="Research" value={resources.research} color="text-purple-400" icon="🔬" />
-          <ResourceDisplay label="Troops" value={planets.filter(p => p.owner_id === player?.id).reduce((sum, p) => sum + p.troops, 0)} color="text-orange-400" icon="⚔️" />
-          <ResourceDisplay label="Attacks" value={attacks.filter(a => a.attackerId === player?.id).length} color="text-red-400" icon="🚀" />
-          <ResourceDisplay label="Planets" value={planets.filter(p => p.owner_id === player?.id).length} color="text-green-400" />
-          <ResourceDisplay label="Territory" value={Math.round(playerTerritoryPercentage)} color="text-cyan-300" />
+        <div className="flex flex-col items-center">
+          <div className="flex justify-center space-x-6 text-white">
+            <ResourceDisplay label="Credits" value={Number(resources.gold)} color="text-yellow-400" icon="💰" />
+            <ResourceDisplay label="Energy" value={resources.energy} color="text-cyan-400" icon="⚡" />
+            <ResourceDisplay label="Minerals" value={resources.minerals} color="text-blue-400" icon="💎" />
+            <ResourceDisplay label="Troops" value={planets.filter(p => p.owner_id === player?.id).reduce((sum, p) => sum + p.troops, 0)} color="text-orange-400" icon="⚔️" />
+            <ResourceDisplay label="Attacks" value={attacks.filter(a => a.attackerId === player?.id).length} color="text-red-400" icon="🚀" />
+            <ResourceDisplay label="Planets" value={planets.filter(p => p.owner_id === player?.id).length} color="text-green-400" />
+            <ResourceDisplay label="Territory" value={Math.round(playerTerritoryPercentage)} color="text-cyan-300" />
+          </div>
+          {(resourceRates.gold > 0 || resourceRates.energy > 0 || resourceRates.minerals > 0) && (
+            <div className="text-xs text-gray-400 mt-1 flex space-x-4">
+              {resourceRates.gold > 0 && <span>+{resourceRates.gold}/sec</span>}
+              {resourceRates.energy > 0 && <span>+{resourceRates.energy}/sec</span>}
+              {resourceRates.minerals > 0 && <span>+{resourceRates.minerals}/sec</span>}
+            </div>
+          )}
         </div>
       </div>
       
@@ -91,12 +119,18 @@ export function HUD() {
             <div className="space-y-2 text-sm">
               <InfoRow label="Owner" value={selectedPlanet.owner_id === player?.id ? 'You' : selectedPlanet.owner_id ? 'Enemy' : 'Neutral'} />
               <InfoRow label="Troops" value={selectedPlanet.troops.toString()} />
-              <InfoRow label="Max Troops" value={selectedPlanet.maxTroops.toString()} />
+              <InfoRow label="Max Troops" value={`${selectedPlanet.maxTroops} (base: 500 + colony bonuses)`} />
               {(() => {
                 const base = 10 + Math.pow(selectedPlanet.troops, 0.73) / 4
                 const ratio = Math.max(0, 1 - (selectedPlanet.troops / selectedPlanet.maxTroops))
                 const growth = Math.floor(Math.max(0, base * ratio))
-                return <InfoRow label="Growth" value={`${growth}/tick`} />
+                const efficiency = (ratio * 100).toFixed(1)
+                return (
+                  <div title="OpenFront formula: base = 10 + (troops^0.73)/4, growth = base * (1 - troops/maxTroops)">
+                    <InfoRow label="Growth" value={`${growth}/tick`} />
+                    <InfoRow label="Efficiency" value={`${efficiency}%`} />
+                  </div>
+                )
               })()}
             </div>
             
@@ -183,7 +217,25 @@ export function HUD() {
             <div className="mt-4 space-y-2 pointer-events-auto">
               {selectedPlanet.owner_id === player?.id && selectedPlanet.troops > 1 && (
                 <button 
-                  onClick={() => setCommandMode({ type: 'send_troops', sourcePlanetId: selectedPlanet.id })}
+                  onClick={() => {
+                    // Log Send Troops button click
+                    console.log('[HUD] Send Troops button clicked for planet:', {
+                      planetId: selectedPlanet.id,
+                      name: selectedPlanet.name,
+                      troops: selectedPlanet.troops
+                    })
+                    
+                    // Log command mode being set
+                    console.log('[HUD] Setting command mode:', {
+                      type: 'send_troops',
+                      sourcePlanetId: selectedPlanet.id
+                    })
+                    
+                    setCommandMode({ type: 'send_troops', sourcePlanetId: selectedPlanet.id })
+                    
+                    // Log command mode active
+                    console.log('[HUD] Command mode active, waiting for target selection')
+                  }}
                   className={`w-full px-3 py-2 rounded transition-colors ${
                     commandMode?.type === 'send_troops' && commandMode.sourcePlanetId === selectedPlanet.id
                       ? 'bg-yellow-600 hover:bg-yellow-700'
@@ -230,6 +282,19 @@ export function HUD() {
       >
         🔍 Territory Debug
       </button>
+
+      {/* Stale Tick Warning Indicator */}
+      {isTickStale && (
+        <div className="absolute top-32 right-4 px-3 py-2 bg-red-900/90 backdrop-blur rounded-lg text-white text-xs pointer-events-none border border-red-500">
+          <div className="flex items-center space-x-2">
+            <span className="animate-pulse">⚠️</span>
+            <span>Game tick system stale</span>
+          </div>
+          <div className="text-xs text-gray-300 mt-1">
+            Ticks may not be processing
+          </div>
+        </div>
+      )}
 
       <div className="absolute right-4 bottom-4 p-4 w-64 bg-black/60 backdrop-blur rounded-lg text-white text-sm pointer-events-none">
         <h4 className="font-bold mb-2">Territory Control</h4>

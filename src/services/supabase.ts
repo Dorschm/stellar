@@ -7,9 +7,31 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables')
 }
 
+// Environment variable validation
+if (import.meta.env.DEV) {
+  if (!supabaseUrl.startsWith('https://')) {
+    console.warn('[SUPABASE] Warning: VITE_SUPABASE_URL should start with https://')
+  }
+  console.log('[SUPABASE] Client initialized for anonymous gameplay')
+}
+
+/**
+ * Supabase client configured for anonymous gameplay
+ * 
+ * This project uses anonymous gameplay (no Supabase Auth required).
+ * Players are identified by UUID in the `players` table, not `auth.users`.
+ * The VITE_SUPABASE_ANON_KEY is the correct key for this pattern.
+ * 
+ * See database/README.md for RLS policy details.
+ */
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 // Database types (will be generated from Supabase CLI later)
+
+/**
+ * Represents anonymous players in the game, not auth users.
+ * Players are created without authentication and identified by UUID.
+ */
 export interface Player {
   id: string
   username: string
@@ -18,7 +40,9 @@ export interface Player {
   energy: number
   minerals: number
   research_points: number
+  /** Distinguishes AI players from human players */
   is_bot?: boolean
+  /** AI difficulty level for bot players */
   bot_difficulty?: 'easy' | 'normal' | 'hard'
   created_at: string
 }
@@ -29,18 +53,26 @@ export interface Game {
   status: 'waiting' | 'active' | 'completed'
   max_players: number
   current_players?: number
+  /** Territory percentage required to win (default: 80%). Non-null by database default. */
   victory_condition: number
+  /** Game tick interval in milliseconds (default: 100ms). Non-null by database default. */
   tick_rate: number
   is_public?: boolean
+  difficulty?: 'easy' | 'normal' | 'hard'
   created_at: string
   started_at?: string
   ended_at?: string
   game_players?: GamePlayer[]
   winner_id?: string
-  victory_type?: 'territory_control' | 'elimination' | 'time_limit'
+  victory_type?: 'conquest' | 'economic' | 'diplomatic' | 'abandoned'
   game_duration_seconds?: number
 }
 
+/**
+ * Links anonymous players to games.
+ * The is_active and last_seen fields are used for presence tracking
+ * in the anonymous gameplay model.
+ */
 export interface GamePlayer {
   game_id: string
   player_id: string

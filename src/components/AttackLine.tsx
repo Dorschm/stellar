@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useEffect, useRef } from 'react'
 import { Line, Text } from '@react-three/drei'
 import * as THREE from 'three'
 import { useGameStore, type Attack, type Planet } from '../store/gameStore'
@@ -10,11 +10,34 @@ interface AttackLineProps {
 
 export function AttackLine({ attack, planets }: AttackLineProps) {
   const currentTick = useGameStore(state => state.currentTick)
+  const lastLoggedMilestone = useRef<number>(-1)
   
   const sourcePlanet = planets.find(p => p.id === attack.sourcePlanetId)
   const targetPlanet = planets.find(p => p.id === attack.targetPlanetId)
   
-  if (!sourcePlanet || !targetPlanet) return null
+  // Add mount/unmount logging
+  useEffect(() => {
+    console.log('[ATTACK LINE] Mounted:', {
+      attackId: attack.id,
+      source: attack.sourcePlanetId,
+      target: attack.targetPlanetId,
+      troops: attack.troops
+    })
+    
+    return () => {
+      console.log('[ATTACK LINE] Unmounted:', { attackId: attack.id })
+    }
+  }, [attack.id, attack.sourcePlanetId, attack.targetPlanetId, attack.troops])
+  
+  // Log missing planet data
+  if (!sourcePlanet || !targetPlanet) {
+    console.log('[ATTACK LINE] Missing planet data:', {
+      attackId: attack.id,
+      missingSource: !sourcePlanet,
+      missingTarget: !targetPlanet
+    })
+    return null
+  }
   
   const sourcePos = new THREE.Vector3(sourcePlanet.x_pos, sourcePlanet.y_pos, sourcePlanet.z_pos)
   const targetPos = new THREE.Vector3(targetPlanet.x_pos, targetPlanet.y_pos, targetPlanet.z_pos)
@@ -26,16 +49,22 @@ export function AttackLine({ attack, planets }: AttackLineProps) {
     ? 1
     : Math.min(1, Math.max(0, elapsedTicks / totalTicks))
   
-  // Debug logging (every 10th frame to avoid spam)
-  if (Math.random() < 0.1) {
-    console.log('[ATTACK LINE] Rendering attack:', {
-      id: attack.id,
-      progress: (progress * 100).toFixed(1) + '%',
-      retreating: attack.retreating,
-      currentTick,
-      startTick: attack.startTick,
-      arrivalTick: attack.arrivalTick
+  // Log progress milestones
+  const progressPercent = progress * 100
+  let currentMilestone = -1
+  
+  if (progressPercent >= 100) currentMilestone = 100
+  else if (progressPercent >= 75) currentMilestone = 75
+  else if (progressPercent >= 50) currentMilestone = 50
+  else if (progressPercent >= 25) currentMilestone = 25
+  
+  if (currentMilestone !== -1 && currentMilestone !== lastLoggedMilestone.current) {
+    console.log('[ATTACK LINE] Progress milestone:', {
+      attackId: attack.id,
+      progress: currentMilestone + '%',
+      retreating: attack.retreating
     })
+    lastLoggedMilestone.current = currentMilestone
   }
   
   // Interpolate position

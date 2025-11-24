@@ -9,14 +9,19 @@ const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
 serve(async (req: Request) => {
+  // CORS headers constant for consistent response formatting across all paths
+  const CORS_HEADERS = {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-client-info, apikey',
+  }
+
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      },
+      status: 204,
+      headers: CORS_HEADERS,
     })
   }
 
@@ -28,10 +33,7 @@ serve(async (req: Request) => {
         JSON.stringify({ error: 'gameId and playerId required' }), 
         { 
           status: 400,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-          }
+          headers: CORS_HEADERS
         }
       )
     }
@@ -49,10 +51,7 @@ serve(async (req: Request) => {
         JSON.stringify({ error: 'Failed to mark player inactive' }), 
         { 
           status: 500,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-          }
+          headers: CORS_HEADERS
         }
       )
     }
@@ -62,10 +61,7 @@ serve(async (req: Request) => {
     return new Response(
       JSON.stringify({ success: true }), 
       { 
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        }
+        headers: CORS_HEADERS
       }
     )
   } catch (error) {
@@ -74,10 +70,7 @@ serve(async (req: Request) => {
       JSON.stringify({ error: 'Internal server error' }), 
       { 
         status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        }
+        headers: CORS_HEADERS
       }
     )
   }

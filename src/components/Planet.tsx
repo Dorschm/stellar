@@ -42,14 +42,44 @@ export function Planet({ planet }: PlanetProps) {
   })
   
   const handleClick = async () => {
+    // Log all click events
+    console.log('[PLANET CLICK] Planet clicked:', {
+      id: planet.id,
+      name: planet.name,
+      owner: planet.owner_id === player?.id ? 'You' : planet.owner_id ? 'Enemy' : 'Neutral',
+      troops: planet.troops,
+      commandMode: commandMode ? { type: commandMode.type, sourcePlanetId: (commandMode as any).sourcePlanetId } : null
+    })
+    
     if (commandMode?.type === 'send_troops' && commandMode.sourcePlanetId !== planet.id) {
+      // Log command mode check
+      console.log('[PLANET CLICK] In send troops mode, source:', commandMode.sourcePlanetId, 'target:', planet.id)
+      
       // Send 50% of troops from source to target (OpenFront style)
       const sourcePlanet = useGameStore.getState().planets.find(p => p.id === commandMode.sourcePlanetId)
+      
+      // Log source planet validation
+      console.log('[PLANET CLICK] Source planet validation:', {
+        found: !!sourcePlanet,
+        troops: sourcePlanet?.troops,
+        troopsToSend: sourcePlanet ? Math.floor(sourcePlanet.troops * 0.5) : 0
+      })
+      
       if (sourcePlanet && sourcePlanet.troops > 1) {
         const troopsToSend = Math.floor(sourcePlanet.troops * 0.5)
+        
+        // Log requestSendTroops call
+        console.log('[PLANET CLICK] Calling requestSendTroops:', {
+          source: commandMode.sourcePlanetId,
+          target: planet.id,
+          troops: troopsToSend
+        })
+        
         await requestSendTroops(commandMode.sourcePlanetId, planet.id, troopsToSend)
       }
     } else {
+      // Log command mode exit
+      console.log('[PLANET CLICK] Normal mode - selecting planet:', planet.id)
       selectPlanet(planet)
     }
   }

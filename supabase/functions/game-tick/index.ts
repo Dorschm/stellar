@@ -241,6 +241,23 @@ function calculatePlayerStats(
 }
 
 serve(async (req: Request) => {
+  // CORS headers constant for consistent response formatting across all paths
+  const CORS_HEADERS = {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-client-info, apikey',
+  }
+
+  // Enable CORS for client-side invocation from localhost during development and production domains
+  // Following the pattern from mark-inactive function for consistency
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: CORS_HEADERS,
+    })
+  }
+
   try {
     const { gameId } = await req.json()
     
@@ -248,7 +265,13 @@ serve(async (req: Request) => {
     
     if (!gameId) {
       console.error('[TICK] Error: gameId required')
-      return new Response(JSON.stringify({ error: 'gameId required' }), { status: 400 })
+      return new Response(
+        JSON.stringify({ error: 'gameId required' }), 
+        { 
+          status: 400,
+          headers: CORS_HEADERS
+        }
+      )
     }
 
     // Check if game is already completed - early exit
@@ -261,7 +284,9 @@ serve(async (req: Request) => {
     if (!gameData || gameData.status === 'completed') {
       return new Response(
         JSON.stringify({ success: true, message: 'Game already completed' }),
-        { headers: { 'Content-Type': 'application/json' } }
+        { 
+          headers: CORS_HEADERS
+        }
       )
     }
 
@@ -358,7 +383,9 @@ serve(async (req: Request) => {
           // Return early - no need to process ticks for abandoned game
           return new Response(
             JSON.stringify({ success: true, message: 'Game abandoned due to inactivity' }),
-            { headers: { 'Content-Type': 'application/json' } }
+            { 
+              headers: CORS_HEADERS
+            }
           )
         }
       }
@@ -368,57 +395,92 @@ serve(async (req: Request) => {
     if (gameData.status !== 'active') {
       return new Response(
         JSON.stringify({ success: true, message: 'Game not active' }),
-        { headers: { 'Content-Type': 'application/json' } }
+        { 
+          headers: CORS_HEADERS
+        }
       )
     }
 
-    // Get or create game tick tracker
-    const { data: tickData, error: tickFetchError } = await supabase
-      .from('game_ticks')
-      .select('*')
-      .eq('game_id', gameId)
-      .single()
-
-    if (tickFetchError && tickFetchError.code !== 'PGRST116') {
-      console.error('[TICK] Error fetching tick data:', tickFetchError)
-    }
-
-    let currentTick = 0
-    if (tickData) {
-      const previousTick = tickData.tick_number
-      currentTick = previousTick + 1
-      console.log(`[TICK] Incrementing tick from ${previousTick} to ${currentTick}`)
-      
-      const { error: updateError } = await supabase
-        .from('game_ticks')
-        .update({ 
-          tick_number: currentTick,
-          last_tick_at: new Date().toISOString()
+    // Get or create game tick tracker with atomic increment
+    let currentTick: number
+    
+    // First try to atomically increment the tick number
+    const { data: updatedTick, error: incrementError } = await supabase.rpc('increment_game_tick', {
+      p_game_id: gameId,
+      p_timestamp: new Date().toISOString()
+    })
+    
+    if (incrementError) {
+      // If the increment fails, it might be because the row doesn't exist yet
+      if (incrementError.code === 'P0001' && incrementError.message.includes('not found')) {
+        console.log('[TICK] Creating initial tick tracker for game')
+        const { data: newTick, error: insertError } = await supabase
+          .from('game_ticks')
+          .insert({ 
+            game_id: gameId, 
+            tick_number: 0,
+            last_tick_at: new Date().toISOString()
+          })
+          .select('tick_number')
+          .single()
+        
+        if (insertError || !newTick) {
+          console.error('[TICK] ERROR: Failed to insert initial tick:', insertError)
+          console.error('[TICK] This may indicate an RLS policy issue')
+          return new Response(
+            JSON.stringify({ error: 'Failed to initialize tick tracker', details: insertError }),
+            { 
+              status: 500, 
+              headers: CORS_HEADERS
+            }
+          )
+        }
+        
+        // After creating the initial row, try the increment again
+        const { data: retryTick, error: retryError } = await supabase.rpc('increment_game_tick', {
+          p_game_id: gameId,
+          p_timestamp: new Date().toISOString()
         })
-        .eq('game_id', gameId)
-      
-      if (updateError) {
-        console.error('[TICK] ERROR: Failed to update tick number:', updateError)
-        console.error('[TICK] This may indicate an RLS policy issue')
+        
+        if (retryError || !retryTick) {
+          console.error('[TICK] ERROR: Failed to increment tick after initialization:', retryError)
+          return new Response(
+            JSON.stringify({ error: 'Failed to increment tick after initialization', details: retryError }),
+            { 
+              status: 500, 
+              headers: CORS_HEADERS
+            }
+          )
+        }
+        
+        currentTick = retryTick
+      } else {
+        // Some other error occurred during increment
+        console.error('[TICK] ERROR: Failed to increment tick:', incrementError)
         return new Response(
-          JSON.stringify({ error: 'Failed to update tick', details: updateError }),
-          { status: 500, headers: { 'Content-Type': 'application/json' } }
+          JSON.stringify({ error: 'Failed to increment tick', details: incrementError }),
+          { 
+            status: 500, 
+            headers: CORS_HEADERS
+          }
         )
       }
+    } else if (updatedTick) {
+      // Successfully incremented the tick
+      currentTick = updatedTick
     } else {
-      console.log('[TICK] Creating initial tick tracker for game')
-      const { error: insertError } = await supabase
-        .from('game_ticks')
-        .insert({ game_id: gameId, tick_number: 0 })
-      
-      if (insertError) {
-        console.error('[TICK] ERROR: Failed to insert initial tick:', insertError)
-        console.error('[TICK] This may indicate an RLS policy issue')
-        return new Response(
-          JSON.stringify({ error: 'Failed to create tick tracker', details: insertError }),
-          { status: 500, headers: { 'Content-Type': 'application/json' } }
-        )
-      }
+      // Shouldn't happen, but handle it just in case
+      console.error('[TICK] ERROR: Increment succeeded but no tick number was returned')
+      return new Response(
+        JSON.stringify({ error: 'Failed to get updated tick number' }),
+        { 
+          status: 500, 
+          headers: CORS_HEADERS
+        }
+      )
+    }
+    
+    console.log(`[TICK] Successfully updated tick to ${currentTick} for game ${gameId}`)
     }
 
     // 1. Generate troops on all owned planets with dynamic troop cap from Colony Stations
@@ -432,6 +494,18 @@ serve(async (req: Request) => {
     }
     
     console.log(`[TICK] Processing ${planets?.length || 0} planets for troop generation`)
+    
+    // Pre-generation summary: log player-owned planet counts
+    const ownedPlanetsByPlayer = new Map<string, number>()
+    planets?.forEach(p => {
+      if (p.owner_id) {
+        ownedPlanetsByPlayer.set(p.owner_id, (ownedPlanetsByPlayer.get(p.owner_id) || 0) + 1)
+      }
+    })
+    ownedPlanetsByPlayer.forEach((count, playerId) => {
+      const playerTroops = planets?.filter(p => p.owner_id === playerId).reduce((sum, p) => sum + (p.troop_count || 0), 0) || 0
+      console.log(`[TICK] Troop generation summary: Player ${playerId} owns ${count} planets with ${playerTroops} total troops`)
+    })
 
     // 2. Fetch structures early for use in troop generation and combat
     const { data: allStructures } = await supabase
@@ -462,8 +536,8 @@ serve(async (req: Request) => {
             planet.troop_count + Math.floor(growth)
           )
           
-          if (planetsUpdated < 3) {
-            console.log(`[TICK] Planet ${planet.id}: ${planet.troop_count} -> ${newTroops} troops (base: ${base.toFixed(2)}, ratio: ${ratio.toFixed(2)}, growth: ${growth.toFixed(2)})`)
+          if (planetsUpdated < 5) {
+            console.log(`[TICK] Planet ${planet.id} (Owner: ${planet.owner_id}): ${planet.troop_count} -> ${newTroops} troops (base: ${base.toFixed(2)}, ratio: ${ratio.toFixed(2)}, growth: ${growth.toFixed(2)})`)
           }
           
           await supabase
@@ -473,7 +547,13 @@ serve(async (req: Request) => {
           planetsUpdated++
         }
       }
-      console.log(`[TICK] Updated troop counts for ${planetsUpdated} planets`)
+      const totalTroopsAdded = planets.filter(p => p.owner_id).reduce((sum, p) => {
+        const base = 10 + Math.pow(p.troop_count, 0.73) / 4
+        const effectiveMax = MAX_TROOPS + (allStructures?.filter((s: any) => s.system_id === p.id && s.structure_type === 'colony_station').reduce((s: number, st: any) => s + (st.level * 100), 0) || 0)
+        const ratio = 1 - (p.troop_count / effectiveMax)
+        return sum + (p.troop_count < effectiveMax ? Math.floor(base * ratio) : 0)
+      }, 0)
+      console.log(`[TICK] Troop generation complete: +${totalTroopsAdded} troops across ${planetsUpdated} planets`)
     }
 
     // 3. Process arriving attacks with advanced combat mechanics
@@ -1303,7 +1383,9 @@ serve(async (req: Request) => {
             winner: winnerId,
             winningPercentage
           }),
-          { headers: { 'Content-Type': 'application/json' } }
+          { 
+            headers: CORS_HEADERS
+          }
         )
       }
     }
@@ -1329,7 +1411,7 @@ serve(async (req: Request) => {
         // Fetch player current resources
         const { data: player } = await supabase
           .from('players')
-          .select('credits, energy, minerals, research_points')
+          .select('credits, energy, minerals')
           .eq('id', gamePlayer.player_id)
           .single()
 
@@ -1342,6 +1424,10 @@ serve(async (req: Request) => {
         let energyIncome = 100 + Math.floor(Math.pow(planetCount, 0.6) * 100)
         
         // Apply energy efficiency (optimal at 42% capacity)
+        // NOTE: This formula must stay in sync with ResourceSystem.calculateEnergyEfficiency()
+        // from src/game/ResourceSystem.ts (lines 105-120). Any changes to the efficiency
+        // calculation should be made in both locations to ensure consistent behavior between
+        // server-side tick processing and client-side resource calculations.
         const maxEnergy = 100000
         const currentRatio = player.energy / maxEnergy
         const optimalRatio = 0.42
@@ -1388,29 +1474,26 @@ serve(async (req: Request) => {
           }
         }
 
-        // Calculate research: 1 per 5 owned planets
-        const researchIncome = Math.floor(planetCount / 5)
-
         // Update player resources with caps
         const maxCredits = 1000000
         const maxMinerals = 100000
-        const maxResearch = 1000
 
         const newCredits = Math.min(player.credits + creditsIncome, maxCredits)
         const newEnergy = Math.min(player.energy + energyIncome, maxEnergy)
         const newMinerals = Math.min(player.minerals + mineralsIncome, maxMinerals)
-        const newResearch = Math.min(player.research_points + researchIncome, maxResearch)
+
+        console.log(`[TICK] Player ${gamePlayer.player_id}: Credits +${creditsIncome} (${player.credits} -> ${newCredits}), Energy +${energyIncome} (${player.energy} -> ${newEnergy}), Minerals +${mineralsIncome} (${player.minerals} -> ${newMinerals})`)
 
         await supabase
           .from('players')
           .update({
             credits: newCredits,
             energy: newEnergy,
-            minerals: newMinerals,
-            research_points: newResearch
+            minerals: newMinerals
           })
           .eq('id', gamePlayer.player_id)
       }
+      console.log(`[TICK] Resource generation complete for ${players.length} players`)
     }
 
     // 5. Bot AI with sophisticated decision-making
@@ -1980,7 +2063,10 @@ serve(async (req: Request) => {
             // Check if update failed or another tick already completed the game
             if (updateError || !updatedGame || updatedGame.status !== 'completed') {
               console.log(`[VICTORY] Race condition: Game ${gameId} already completed by another tick`)
-              return { success: true, skipped: true }
+              return new Response(
+                JSON.stringify({ success: true, skipped: true }),
+                { headers: CORS_HEADERS }
+              )
             }
             
             console.log(`[VICTORY] Game ${gameId} completed by tick ${currentTick}, winner ${winnerId}`)
@@ -2112,14 +2198,19 @@ serve(async (req: Request) => {
           sectorsCreated: sectorsCreated
         }
       }),
-      { headers: { 'Content-Type': 'application/json' } }
+      { 
+        headers: CORS_HEADERS
+      }
     )
   } catch (error: unknown) {
     console.error('[TICK] Fatal error:', error)
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
     return new Response(
       JSON.stringify({ error: errorMessage, details: error }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      { 
+        status: 500, 
+        headers: CORS_HEADERS
+      }
     )
   }
 })

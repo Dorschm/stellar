@@ -10,7 +10,6 @@ interface Resources {
   gold: bigint // Main resource like OpenFront (maps to credits)
   energy: number
   minerals: number
-  research: number
 }
 
 export type StructureType = 'shipyard' | 'defense_station' | 'trade_port' | 'research_lab'
@@ -57,6 +56,7 @@ interface GameState {
   currentTick: number
   combatLogs: CombatLog[]
   recentCombatLog: CombatLog | null
+  isTickStale: boolean
   
   // UI state (client-side only)
   cameraPosition: { x: number; y: number; z: number }
@@ -83,6 +83,7 @@ interface GameState {
   setCurrentTick: (tick: number) => void
   setCombatLogs: (logs: CombatLog[]) => void
   setRecentCombatLog: (log: CombatLog | null) => void
+  setTickHealth: (isStale: boolean) => void
   
   // Economic system actions
   buildStructure: (systemId: string, structureType: string) => Promise<boolean>
@@ -131,11 +132,11 @@ export const useGameStore = create<GameState>()((set, get) => ({
     gold: BigInt(0),
     energy: 0,
     minerals: 0,
-    research: 0,
   },
   currentTick: 0,
   combatLogs: [],
   recentCombatLog: null,
+  isTickStale: false,
   cameraPosition: { x: 0, y: 50, z: 100 },
   selectedPlanet: null,
   selectedAttack: null,
@@ -144,15 +145,23 @@ export const useGameStore = create<GameState>()((set, get) => ({
   
   // Setters for syncing with Supabase
   setGame: (game) => set({ currentGame: game }),
-  setPlayer: (player) => set((state) => ({
-    player,
-    resources: player ? {
+  setPlayer: (player) => set((state) => {
+    const newResources = player ? {
       gold: BigInt(player.credits || 0),
       energy: player.energy || 0,
       minerals: player.minerals || 0,
-      research: player.research_points || 0
     } : state.resources
-  })),
+    
+    if (player) {
+      console.log('[STORE] Resources updated:', {
+        gold: { old: Number(state.resources.gold), new: Number(newResources.gold), delta: Number(newResources.gold) - Number(state.resources.gold) },
+        energy: { old: state.resources.energy, new: newResources.energy, delta: newResources.energy - state.resources.energy },
+        minerals: { old: state.resources.minerals, new: newResources.minerals, delta: newResources.minerals - state.resources.minerals }
+      })
+    }
+    
+    return { player, resources: newResources }
+  }),
   setSystems: (systems) => set({ systems }),
   setPlanets: (systems) => set((state) => {
     const nextPlanets = systems.map(systemToPlanet)
@@ -211,12 +220,15 @@ export const useGameStore = create<GameState>()((set, get) => ({
   setCurrentTick: (tick) => {
     const currentTick = useGameStore.getState().currentTick
     if (tick !== currentTick) {
-      console.log(`[STORE] Tick updated in store: ${currentTick} -> ${tick}`)
+      console.log(`[STORE] Tick updated at ${Date.now()}: ${currentTick} -> ${tick}`)
+    } else {
+      console.log(`[STORE] Tick unchanged: ${tick}`)
     }
     set({ currentTick: tick })
   },
   setCombatLogs: (logs) => set({ combatLogs: logs }),
   setRecentCombatLog: (log) => set({ recentCombatLog: log }),
+  setTickHealth: (isStale) => set({ isTickStale: isStale }),
   
   // UI actions
   selectPlanet: (planet) => set({ selectedPlanet: planet }),
@@ -243,7 +255,6 @@ export const useGameStore = create<GameState>()((set, get) => ({
       gold: BigInt(0),
       energy: 0,
       minerals: 0,
-      research: 0,
     },
     currentTick: 0,
     combatLogs: [],
@@ -256,13 +267,51 @@ export const useGameStore = create<GameState>()((set, get) => ({
   
   // Server action - send troops
   requestSendTroops: async (sourcePlanetId, targetPlanetId, troopCount) => {
+    // Add entry logging
+    console.log('[STORE] requestSendTroops called:', {
+      source: sourcePlanetId,
+      target: targetPlanetId,
+      troops: troopCount
+    })
+    
     const state = get()
     const source = state.planets.find(p => p.id === sourcePlanetId)
     const target = state.planets.find(p => p.id === targetPlanetId)
     
-    if (!source || !target || !state.player || !state.currentGame) return
-    if (source.owner_id !== state.player.id) return
-    if (source.troops < troopCount) return
+    // Log validation
+    console.log('[STORE] Validation:', {
+      sourceFound: !!source,
+      targetFound: !!target,
+      playerAuth: !!state.player,
+      gameSet: !!state.currentGame,
+      ownsSource: source ? source.owner_id === state.player?.id : false,
+      hasTroops: source ? source.troops >= troopCount : false
+    })
+    
+    if (!source) {
+      console.error('[STORE ERROR] Failed validation: Source planet not found')
+      return
+    }
+    if (!target) {
+      console.error('[STORE ERROR] Failed validation: Target planet not found')
+      return
+    }
+    if (!state.player) {
+      console.error('[STORE ERROR] Failed validation: Player not authenticated')
+      return
+    }
+    if (!state.currentGame) {
+      console.error('[STORE ERROR] Failed validation: Current game not set')
+      return
+    }
+    if (source.owner_id !== state.player.id) {
+      console.error('[STORE ERROR] Failed validation: Source planet not owned by player')
+      return
+    }
+    if (source.troops < troopCount) {
+      console.error('[STORE ERROR] Failed validation: Insufficient troops')
+      return
+    }
     
     // Calculate travel time
     const dx = target.x_pos - source.x_pos
@@ -273,7 +322,9 @@ export const useGameStore = create<GameState>()((set, get) => ({
     const arrivalAt = new Date(Date.now() + travelMs).toISOString()
     
     // Log attack creation attempt
-    console.log('[ATTACK] Creating attack:', {
+    console.log('[STORE] Creating attack:', {
+      gameId: state.currentGame.id,
+      attackerId: state.player.id,
       sourcePlanetId,
       targetPlanetId,
       troopCount,
@@ -281,52 +332,76 @@ export const useGameStore = create<GameState>()((set, get) => ({
       arrivalAt
     })
     
-    // Create attack in Supabase
-    const { data: attackData, error: attackError } = await supabase
-      .from('planet_attacks')
-      .insert({
-        game_id: state.currentGame.id,
-        attacker_id: state.player.id,
-        source_planet_id: sourcePlanetId,
-        target_planet_id: targetPlanetId,
-        troops: troopCount,
-        arrival_at: arrivalAt
+    try {
+      // Create attack in Supabase
+      const { data: attackData, error: attackError } = await supabase
+        .from('planet_attacks')
+        .insert({
+          game_id: state.currentGame.id,
+          attacker_id: state.player.id,
+          source_planet_id: sourcePlanetId,
+          target_planet_id: targetPlanetId,
+          troops: troopCount,
+          arrival_at: arrivalAt
+        })
+        .select()
+        .single()
+      
+      if (attackError) {
+        console.error('[STORE] Failed to create attack:', attackError)
+        console.error('[STORE] Error details:', {
+          code: attackError.code,
+          message: attackError.message,
+          details: attackError.details
+        })
+        set({ commandMode: null })
+        return // Exit early on failure
+      }
+      
+      if (attackData) {
+        console.log('[STORE] Attack created successfully:', {
+          attackId: attackData.id,
+          troops: troopCount,
+          source: sourcePlanetId,
+          target: targetPlanetId
+        })
+      }
+      
+      // Deduct troops atomically using server-side RPC
+      console.log('[STORE] Deducting troops from source planet via RPC:', {
+        planetId: sourcePlanetId,
+        troopCount: troopCount
       })
-      .select()
-      .single()
-    
-    if (attackError) {
-      console.error('[ATTACK] Failed to create attack:', attackError)
-      console.error('[ATTACK] Error details:', {
-        code: attackError.code,
-        message: attackError.message,
-        details: attackError.details
-      })
-      return // Exit early on failure
+      
+      const { data: deductResult, error: deductError } = await supabase
+        .rpc('deduct_troops', {
+          p_system_id: sourcePlanetId,
+          p_troop_count: troopCount
+        })
+      
+      if (deductError) {
+        console.error('[STORE] Failed to call deduct_troops RPC:', deductError)
+        set({ commandMode: null })
+        return
+      }
+      
+      if (!deductResult?.success) {
+        console.error('[STORE] Troop deduction failed:', deductResult)
+        set({ commandMode: null })
+        return
+      }
+      
+      console.log('[STORE] Troops deducted successfully:', deductResult)
+      
+      // Clear command mode
+      console.log('[STORE] Command mode cleared')
+      set({ commandMode: null })
+      
+      console.log('[STORE] requestSendTroops completed successfully')
+    } catch (error) {
+      console.error('[STORE ERROR] Unexpected error in requestSendTroops:', error)
+      set({ commandMode: null })
     }
-    
-    if (attackData) {
-      console.log('[ATTACK] Attack created successfully:', attackData.id)
-    }
-    
-    // Deduct troops immediately (server will verify)
-    console.log('[ATTACK] Deducting troops from source planet:', {
-      planetId: sourcePlanetId,
-      oldTroops: source.troops,
-      newTroops: source.troops - troopCount
-    })
-    
-    const { error: deductError } = await supabase
-      .from('systems')
-      .update({ troop_count: source.troops - troopCount })
-      .eq('id', sourcePlanetId)
-    
-    if (deductError) {
-      console.error('[ATTACK] Failed to deduct troops:', deductError)
-    }
-    
-    // Clear command mode
-    set({ commandMode: null })
   },
   
   // Build a structure on a system
@@ -418,7 +493,6 @@ export const useGameStore = create<GameState>()((set, get) => ({
             gold: BigInt(updatedPlayer.credits || 0),
             energy: updatedPlayer.energy || 0,
             minerals: updatedPlayer.minerals || 0,
-            research: updatedPlayer.research_points || 0
           }
         }))
       }

@@ -10,7 +10,6 @@ export interface ResourceGeneration {
   energy: number
   credits: number
   minerals: number
-  research: number
 }
 
 export interface ResourceCost {
@@ -35,13 +34,11 @@ export type StructureCostKey =
 
 export class ResourceSystem {
   private baseEnergyGeneration = 100
-  private baseResearchGeneration = 1
   
   // Maximum resource caps
   private maxEnergy = 100000
   private maxCredits = 1000000
   private maxMinerals = 100000
-  private maxResearch = 1000
   
   /**
    * Calculate total resource generation for a player
@@ -58,7 +55,6 @@ export class ResourceSystem {
     let totalEnergy = 0
     let totalCredits = 0
     let totalMinerals = 0
-    let totalResearch = 0
     
     // Base energy: 100 + (ownedPlanets^0.6 * 100)
     totalEnergy = this.baseEnergyGeneration + Math.floor(Math.pow(ownedSystems.length, 0.6) * 100)
@@ -94,9 +90,6 @@ export class ResourceSystem {
       }
     }
     
-    // Research: 1 per 5 owned planets
-    totalResearch = Math.floor(ownedSystems.length / 5)
-    
     // Apply efficiency based on resource levels (OpenFront formula)
     const energyEfficiency = this.calculateEnergyEfficiency(currentEnergy, this.maxEnergy)
     totalEnergy = Math.floor(totalEnergy * energyEfficiency)
@@ -104,8 +97,7 @@ export class ResourceSystem {
     return {
       energy: totalEnergy,
       credits: totalCredits,
-      minerals: totalMinerals,
-      research: totalResearch
+      minerals: totalMinerals
     }
   }
   
@@ -133,18 +125,17 @@ export class ResourceSystem {
    */
   processResourceTick(
     playerId: string,
-    currentResources: { energy: number; credits: number; minerals: number; research: number },
+    currentResources: { energy: number; credits: number; minerals: number },
     systems: any[],
     structures: Structure[]
-  ): { energy: number; credits: number; minerals: number; research: number } {
+  ): { energy: number; credits: number; minerals: number } {
     const generation = this.calculateResourceGeneration(playerId, systems, structures, currentResources.energy)
     
     // Apply generation with caps
     const newResources = {
       energy: Math.min(currentResources.energy + generation.energy, this.maxEnergy),
       credits: Math.min(currentResources.credits + generation.credits, this.maxCredits),
-      minerals: Math.min(currentResources.minerals + generation.minerals, this.maxMinerals),
-      research: Math.min(currentResources.research + generation.research, this.maxResearch)
+      minerals: Math.min(currentResources.minerals + generation.minerals, this.maxMinerals)
     }
     
     return newResources
@@ -318,15 +309,13 @@ export class ResourceSystem {
     const base: ResourceGeneration = {
       energy: this.baseEnergyGeneration + Math.floor(Math.pow(ownedSystems.length, 0.6) * 100),
       credits: ownedSystems.length * 10,
-      minerals: 0,
-      research: Math.floor(ownedSystems.length / 5) * this.baseResearchGeneration
+      minerals: 0
     }
     
     const bonuses: ResourceGeneration = {
       energy: 0,
       credits: this.calculateTradeIncome(playerId),
-      minerals: structures.filter(s => s.structure_type === 'mining_station' && s.is_active).length * 50,
-      research: 0
+      minerals: structures.filter(s => s.structure_type === 'mining_station' && s.is_active).length * 50
     }
     
     // Calculate penalties (e.g., from low efficiency)
@@ -336,8 +325,7 @@ export class ResourceSystem {
     const penalties: ResourceGeneration = {
       energy: energyPenalty,
       credits: 0,
-      minerals: 0,
-      research: 0
+      minerals: 0
     }
     
     const total = this.calculateResourceGeneration(playerId, systems, structures, resources.energy)
@@ -359,7 +347,6 @@ export class ResourceSystem {
     BUILD_STRUCTURE_DEFENSE: { credits: 25000, minerals: 500, energy: 500 } as StructureCost,
     BUILD_STRUCTURE_MISSILE: { credits: 75000, minerals: 1000, energy: 1000 } as StructureCost,
     BUILD_STRUCTURE_POINT_DEFENSE: { credits: 50000, minerals: 750, energy: 750 } as StructureCost,
-    RESEARCH_TECH: { research: 10 },
     LAUNCH_ANTIMATTER: { credits: 100000, minerals: 5000, energy: 10000 },
     LAUNCH_NOVA_BOMB: { credits: 200000, minerals: 10000, energy: 20000 },
     LAUNCH_SWARM: { credits: 150000, minerals: 7500, energy: 15000 }

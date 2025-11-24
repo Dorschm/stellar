@@ -22,6 +22,10 @@ export class GameService {
   private static readonly STARTING_TROOP_COUNT = 100
   
   // Create a new game (adapted from OpenFront's /api/create_game)
+  // NOTE: This method uses the 'difficulty' column at line 37. If you encounter
+  // "Could not find the 'difficulty' column of 'games' in the schema cache" errors,
+  // run database/add_difficulty_column.sql migration and reload PostgREST schema cache.
+  // See SUPABASE_SCHEMA_CACHE_REFRESH.md for detailed instructions.
   async createGame(creatorPlayerId: string, params: CreateGameParams): Promise<Game> {
     try {
       // Create game
@@ -34,7 +38,7 @@ export class GameService {
           victory_condition: params.victoryCondition || 80,
           tick_rate: 100,
           is_public: params.isPublic || false,
-          difficulty: params.difficulty || 'normal',
+          difficulty: params.difficulty || 'normal', // Used for bot AI behavior (easy/normal/hard)
           created_at: new Date().toISOString()
         })
         .select()
@@ -175,11 +179,13 @@ export class GameService {
       // Auto-fill with bot players if lobby isn't full
       const botsNeeded = Math.max(0, (gameRecord.max_players || players.length) - players.length)
       if (botsNeeded > 0) {
+        // Pass difficulty to add_bots_to_game RPC, which stores it in players table
+        // Edge Function (game-tick/index.ts) reads this to apply difficulty multipliers
         const difficulty = gameRecord.difficulty || 'normal'
         const { error: botsError } = await supabase.rpc('add_bots_to_game', {
-          game_id: gameId,
-          num_bots: botsNeeded,
-          p_difficulty: difficulty
+          p_game_id: gameId,
+          p_num_bots: botsNeeded,
+          p_difficulty: difficulty // Configures bot AI behavior in Edge Function
         })
 
         if (botsError) throw botsError
