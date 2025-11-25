@@ -3,5 +3,6 @@ deployment:
   tasks:
     - /bin/bash -lc "npm ci"
     - /bin/bash -lc "npm run build"
-    - /bin/bash -lc "mkdir -p ~/public_html/stellar"
-    - /bin/bash -lc "rsync -av --delete dist/ ~/public_html/stellar/"
+    - /bin/bash -lc "rm -rf ~/public_html/app"
+    - /bin/bash -lc "mkdir -p ~/public_html/app"
+    - /bin/bash -lc "rsync -av --delete dist/ ~/public_html/app/"

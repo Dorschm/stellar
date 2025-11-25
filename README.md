@@ -31,11 +31,11 @@ A 3D space real-time strategy game inspired by OpenFront.io, built with Three.js
 
 1. Clone the repository
 2. Install dependencies: `npm install`
-3. Add your Supabase credentials to `.env`:
-   ```
-   VITE_SUPABASE_URL=your_url_here
-   VITE_SUPABASE_ANON_KEY=your_key_here
-   ```
+3. Set up environment variables:
+   - **For Development**: Copy `.env.example` to `.env` and add your Supabase credentials
+   - **For Production**: Copy `.env.example` to `.env.production.local` and add production credentials
+   - Get credentials from Supabase Dashboard > Settings > API
+   - See `ENVIRONMENT_SETUP.md` for detailed configuration guide
 4. Run the development server: `npm run dev`
 5. Open http://localhost:3000
 
@@ -44,6 +44,18 @@ A 3D space real-time strategy game inspired by OpenFront.io, built with Three.js
 - **Camera**: Click and drag to orbit, scroll to zoom
 - **Selection**: Click on systems or fleets to select
 - **Build**: Select an owned system and click "Build Structure"
+
+## Production Deployment
+
+For deploying to https://stellar.game:
+
+1. **Environment Setup**: Create `.env.production.local` with production Supabase credentials (see `ENVIRONMENT_SETUP.md`)
+2. **Edge Functions**: Deploy Supabase Edge Functions (see `EDGE_FUNCTION_DEPLOYMENT.md`)
+3. **Database**: Apply all migrations and refresh schema cache (see `database/MIGRATION_CHECKLIST.md`)
+4. **Build**: Run `npm run build` and verify output (see `PRODUCTION_BUILD_GUIDE.md`)
+5. **Deploy**: Follow cPanel deployment steps (see subsequent phases)
+
+For detailed instructions, refer to the documentation files listed above.
 
 ## Territory Expansion System
 

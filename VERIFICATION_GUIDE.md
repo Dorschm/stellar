@@ -21,7 +21,7 @@ This comprehensive verification guide provides step-by-step instructions for tes
 ## 2. Step 1: Start Development Server
 - Command: `npm run dev`
 - Expected output: Server starts on `http://localhost:3000`
-- Open browser and navigate to `http://localhost:3000/stellar/`
+- Open browser and navigate to `http://localhost:3000/`
 - Open browser DevTools Console (F12 → Console tab)
 
 ## 3. Step 2: Create a New Game
